@@ -156,8 +156,6 @@ export function openCleanerModal(options = {}) {
                 </aside>
 
                 <div class="st-cleaner-canvas">
-                    <div class="st-cleaner-mobile-cats" data-ref="mobile-cats"></div>
-
                     <header class="st-cleaner-header">
                         <div class="st-cleaner-header-titles">
                             <h2 class="st-cleaner-page-title" data-ref="page-title">数据总览</h2>
@@ -175,6 +173,8 @@ export function openCleanerModal(options = {}) {
                             </button>
                         </div>
                     </header>
+
+                    <div class="st-cleaner-mobile-cats" data-ref="mobile-cats" role="tablist" aria-label="分类导航"></div>
 
                     <section class="st-cleaner-overview st-cleaner-scroll" data-view="overview">
                         <div class="st-cleaner-bento-grid" data-ref="bento-grid"></div>
@@ -391,7 +391,17 @@ export function openCleanerModal(options = {}) {
                 </button>
             `;
         }).join('');
+        const prevMobileScroll = refs.mobileCats.scrollLeft;
         refs.mobileCats.innerHTML = mobileOverviewPill + mobileCatPills;
+        refs.mobileCats.scrollLeft = prevMobileScroll;
+        const activeMobilePill = refs.mobileCats.querySelector('.st-cleaner-cat-pill.is-active');
+        if (activeMobilePill && typeof activeMobilePill.scrollIntoView === 'function') {
+            try {
+                activeMobilePill.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+            } catch {
+                // Ignore older browser scrollIntoView option quirks
+            }
+        }
     }
 
     // =========================================================================

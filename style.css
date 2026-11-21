@@ -215,8 +215,10 @@
    ========================================================================== */
 .st-cleaner-modal {
   position: relative;
-  width: min(1100px, 95vw);
-  height: min(760px, 90dvh);
+  width: clamp(860px, 82vw, 1180px);
+  max-width: 95vw;
+  height: clamp(640px, 86dvh, 800px);
+  max-height: 92dvh;
   background: var(--stc-bg-canvas);
   border-radius: 22px;
   box-shadow: var(--stc-modal-shadow);
@@ -1142,11 +1144,14 @@
   display: inline-flex;
   align-items: center;
   height: 22px;
+  max-width: 140px;
   padding: 0 8px;
   border-radius: 6px;
   font-size: 11px;
   font-weight: 600;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .st-cleaner-badge-active {
@@ -1582,69 +1587,176 @@
 }
 
 /* ==========================================================================
-   10. Multi-Resolution & Mobile Responsive Adaptation
-       (1366×768 / 1600×900 / 1920×1080 / 2560×1440 / <768px Mobile)
+   10. Multi-Resolution & Cross-Device Responsive Adaptation
+       Covers:
+       - 2560×1440 (QHD Large Screen)
+       - 1920×1080 (Full HD Mainstream)
+       - 1600×900  (Mid-Tier Desktop)
+       - 1366×768  (Compact Laptop / Height <= 820px)
+       - 768~1024  (iPad / Tablet Portrait & Landscape)
+       - <= 767px  (Mobile Portrait: 360~430px + Ultra-Narrow <= 359px)
+       - <= 560pxH (Mobile Landscape / Split Window)
    ========================================================================== */
-@media (max-height: 820px) {
+
+/* Large QHD / 4K Workstations (>= 2100px) */
+@media (min-width: 2100px) and (min-height: 1100px) {
   .st-cleaner-modal {
-    height: min(710px, 93dvh);
+    width: min(1280px, 76vw);
+    height: min(860px, 80dvh);
+  }
+  .st-cleaner-sidebar {
+    width: 244px;
+    padding: 24px 16px 20px;
+  }
+  .st-cleaner-header {
+    padding: 24px 32px 16px;
+  }
+  .st-cleaner-overview {
+    padding: 6px 32px 24px;
+    gap: 20px;
+  }
+  .st-cleaner-bento-grid {
+    gap: 14px;
+  }
+  .st-cleaner-bento-tile {
+    padding: 18px 20px;
+    gap: 16px;
+  }
+  .st-cleaner-workspace {
+    padding: 0 32px;
+  }
+  .st-cleaner-footer {
+    padding: 14px 32px;
+  }
+}
+
+/* Compact Laptop Height (e.g. 1366×768 / 1536×864 with browser chrome) */
+@media (max-height: 820px) and (min-width: 768px) {
+  .st-cleaner-root {
+    padding: 12px 16px;
+  }
+  .st-cleaner-modal {
+    height: min(706px, 94dvh);
+  }
+  .st-cleaner-sidebar {
+    padding: 14px 12px 12px;
+    gap: 6px;
+  }
+  .st-cleaner-brand {
+    padding: 0 6px 4px;
+  }
+  .st-cleaner-nav-group-label {
+    padding: 6px 10px 2px;
+  }
+  .st-cleaner-nav-scroll {
+    gap: 2px;
+  }
+  .st-cleaner-nav-item {
+    min-height: 33px;
+    padding: 5px 10px;
+    font-size: 12.5px;
+  }
+  .st-cleaner-sidebar-promo {
+    display: none;
   }
   .st-cleaner-header {
     padding: 14px 22px 10px;
   }
   .st-cleaner-page-title {
-    font-size: 20px;
+    font-size: 19.5px;
   }
   .st-cleaner-overview {
-    padding: 2px 22px 14px;
-    gap: 12px;
+    padding: 2px 22px 12px;
+    gap: 11px;
   }
   .st-cleaner-bento-grid {
-    gap: 10px;
+    gap: 9px;
   }
   .st-cleaner-bento-tile {
     padding: 11px 14px;
     gap: 8px;
+    border-radius: 14px;
   }
   .st-cleaner-tile-icon {
     width: 30px;
     height: 30px;
+    font-size: 13px;
   }
   .st-cleaner-tile-bignum {
     font-size: 19px;
   }
   .st-cleaner-stats-panel {
-    padding: 12px 16px;
-    gap: 10px;
+    padding: 11px 16px;
+    gap: 9px;
+    border-radius: 14px;
   }
-  .st-cleaner-sidebar {
-    padding: 14px 12px 12px;
-    gap: 8px;
+  .st-cleaner-stat-bars {
+    gap: 9px 20px;
   }
-  .st-cleaner-nav-item {
-    min-height: 34px;
-    padding: 5px 10px;
-  }
-  .st-cleaner-sidebar-promo {
-    display: none;
+  .st-cleaner-workspace {
+    padding: 0 22px;
   }
   .st-cleaner-footer {
     padding: 10px 22px;
   }
 }
 
-@media (max-width: 900px) {
+/* Tablet / Half-Screen Split Desktop (768px ~ 1024px) */
+@media (max-width: 1024px) {
+  .st-cleaner-modal {
+    width: 96vw;
+  }
   .st-cleaner-sidebar {
-    width: 192px;
+    width: 196px;
+    padding: 16px 10px 14px;
+  }
+  .st-cleaner-header {
+    padding: 16px 20px 12px;
+  }
+  .st-cleaner-overview {
+    padding: 4px 20px 16px;
+  }
+  .st-cleaner-workspace {
+    padding: 0 20px;
+  }
+  .st-cleaner-footer {
+    padding: 11px 20px;
   }
   .st-cleaner-bento-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+  /* Prevent orphaned 9th card leaving an empty half-row hole in 2-col layout */
+  .st-cleaner-bento-tile:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 12px;
+  }
+  .st-cleaner-bento-tile:last-child:nth-child(odd) .st-cleaner-tile-top {
+    display: contents;
+  }
+  .st-cleaner-bento-tile:last-child:nth-child(odd) .st-cleaner-tile-icon {
+    order: 1;
+  }
+  .st-cleaner-bento-tile:last-child:nth-child(odd) .st-cleaner-tile-bottom {
+    order: 2;
+    min-width: 0;
+  }
+  .st-cleaner-bento-tile:last-child:nth-child(odd) .st-cleaner-tile-metric {
+    order: 3;
+  }
+  .st-cleaner-bento-tile:last-child:nth-child(odd) .st-cleaner-tile-title-row {
+    justify-content: flex-start;
+    gap: 8px;
+  }
   .st-cleaner-stat-bars {
     grid-template-columns: 1fr;
+    gap: 10px;
   }
 }
 
+/* Mobile Portrait & Small Screens (<= 767px) */
 @media (max-width: 767px) {
   .st-cleaner-root {
     padding: 0;
@@ -1652,26 +1764,49 @@
   }
   .st-cleaner-modal {
     width: 100vw;
+    max-width: 100vw;
     height: 94dvh;
-    border-radius: 22px 22px 0 0;
+    max-height: 94dvh;
+    border-radius: 20px 20px 0 0;
   }
   .st-cleaner-sidebar {
     display: none;
   }
+
+  /* Row 1: Top Header with Title + Utility / Close Buttons */
+  .st-cleaner-header {
+    padding: 14px 16px 10px;
+    gap: 10px;
+  }
+  .st-cleaner-page-title {
+    font-size: 18px;
+  }
+  .st-cleaner-page-sub {
+    font-size: 11.5px;
+  }
+  .st-cleaner-icon-btn {
+    width: 34px;
+    height: 34px;
+    border-radius: 9px;
+  }
+
+  /* Row 2: Horizontal Category Capsule Bar Directly Below Header */
   .st-cleaner-mobile-cats {
     display: flex;
     align-items: center;
     gap: 6px;
     overflow-x: auto;
-    padding: 12px 16px 4px;
+    padding: 0 16px 10px;
+    border-bottom: 1px solid var(--stc-border);
     flex-shrink: 0;
     scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
   }
   .st-cleaner-mobile-cats::-webkit-scrollbar {
     display: none;
   }
   .st-cleaner-cat-pill {
-    height: 32px;
+    height: 31px;
     padding: 0 12px;
     border-radius: 999px;
     background: var(--stc-bg-subtle) !important;
@@ -1685,8 +1820,8 @@
     flex-shrink: 0;
   }
   .st-cleaner-cat-pill.is-active {
-    background: #191825 !important;
-    color: #ffffff !important;
+    background: var(--stc-obsidian) !important;
+    color: var(--stc-obsidian-fg) !important;
   }
   .st-cleaner-pill-sel {
     padding: 1px 6px;
@@ -1696,27 +1831,228 @@
     font-size: 10.5px;
     font-weight: 700;
   }
-  .st-cleaner-header {
-    padding: 10px 16px;
-  }
-  .st-cleaner-page-title {
-    font-size: 18px;
-  }
+
+  /* Overview Content */
   .st-cleaner-overview {
-    padding: 4px 16px 16px;
+    padding: 12px 14px 16px;
+    gap: 14px;
   }
   .st-cleaner-bento-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 9px;
   }
+  .st-cleaner-bento-tile {
+    padding: 12px 13px;
+    gap: 10px;
+    border-radius: 14px;
+  }
+  .st-cleaner-tile-icon {
+    width: 30px;
+    height: 30px;
+    font-size: 13px;
+  }
+  .st-cleaner-tile-bignum {
+    font-size: 19px;
+  }
+  .st-cleaner-tile-title {
+    font-size: 13.5px;
+  }
+  .st-cleaner-stats-panel {
+    padding: 13px 14px;
+  }
+
+  /* Workspace Toolbar & List */
   .st-cleaner-workspace {
-    padding: 0 14px;
+    padding: 10px 14px 0;
+  }
+  .st-cleaner-toolbar {
+    gap: 8px;
+    padding-bottom: 8px;
   }
   .st-cleaner-search-row {
     flex-wrap: wrap;
+    gap: 8px;
+  }
+  .st-cleaner-search-box {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+  .st-cleaner-bulk-btns {
+    width: 100%;
+    justify-content: flex-end;
+  }
+  .st-cleaner-btn-ghost {
+    height: 30px;
+    padding: 0 10px;
+    font-size: 12px !important;
+  }
+  .st-cleaner-vitem-row {
+    padding: 0 8px;
+    gap: 10px;
+  }
+  .st-cleaner-badge {
+    max-width: 88px;
+    padding: 0 6px;
+    font-size: 10.5px;
+  }
+
+  /* Structured 2-Row Mobile Footer (Zero Ragged Wrapping) */
+  .st-cleaner-footer {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 9px;
+    padding: 10px 14px calc(10px + env(safe-area-inset-bottom, 0px));
+  }
+  .st-cleaner-footer-left {
+    width: 100%;
+    justify-content: space-between;
+    flex-wrap: nowrap;
+    gap: 8px;
+  }
+  .st-cleaner-selected-summary {
+    min-width: 0;
+    max-width: 58%;
+  }
+  .st-cleaner-selected-summary span[data-ref="selected-count-text"] {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .st-cleaner-skip-toggle {
+    font-size: 12px;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+  .st-cleaner-footer-right {
+    width: 100%;
+    display: flex;
+    gap: 8px;
+  }
+  .st-cleaner-footer-right .st-cleaner-primary-btn {
+    flex: 1;
+  }
+
+  /* Bottom-Docked Confirmation Sheet on Mobile */
+  .st-cleaner-sheet-mask {
+    padding: 0;
+    align-items: flex-end;
+  }
+  .st-cleaner-sheet {
+    width: 100%;
+    max-width: 100%;
+    max-height: 88dvh;
+    border-radius: 20px 20px 0 0;
+    border-bottom: none;
+  }
+  .st-cleaner-sheet-head {
+    padding: 15px 16px 12px;
+  }
+  .st-cleaner-sheet-body {
+    padding: 14px 16px;
+  }
+  .st-cleaner-sheet-foot {
+    padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px));
+    gap: 6px;
+  }
+  .st-cleaner-sheet-foot .st-cleaner-danger-btn {
+    flex: 1;
+    padding: 0 12px;
+  }
+}
+
+/* Narrow Phones (<= 560px): Protect Item Title Readability & Compact Subtitle */
+@media (max-width: 560px) {
+  .st-cleaner-page-sub {
+    display: none;
+  }
+  /* Keep primary status badge + more button; hide secondary badge so titles never crush */
+  .st-cleaner-item-right .st-cleaner-badge:nth-of-type(2) {
+    display: none;
+  }
+}
+
+/* Ultra-Narrow Phones / Split View (<= 359px): Single-Column Bento Cards */
+@media (max-width: 359px) {
+  .st-cleaner-bento-grid {
+    grid-template-columns: 1fr;
+  }
+  .st-cleaner-bento-tile:last-child:nth-child(odd) {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .st-cleaner-bento-tile:last-child:nth-child(odd) .st-cleaner-tile-top {
+    display: flex;
+    order: 1;
+  }
+  .st-cleaner-bento-tile:last-child:nth-child(odd) .st-cleaner-tile-bottom {
+    order: 2;
+  }
+}
+
+/* Mobile Landscape / Short Split Windows (Height <= 560px) */
+@media (max-height: 560px) {
+  .st-cleaner-root {
+    padding: 6px;
+    align-items: center;
+  }
+  .st-cleaner-modal {
+    height: 96dvh;
+    max-height: 96dvh;
+    border-radius: 16px;
+  }
+  .st-cleaner-sidebar {
+    padding: 10px 10px;
+    gap: 4px;
+  }
+  .st-cleaner-sidebar-promo,
+  .st-cleaner-nav-group-label,
+  .st-cleaner-page-sub {
+    display: none;
+  }
+  .st-cleaner-header {
+    padding: 8px 16px;
+  }
+  .st-cleaner-page-title {
+    font-size: 16.5px;
+  }
+  .st-cleaner-mobile-cats {
+    padding: 0 14px 6px;
+  }
+  .st-cleaner-toolbar {
+    gap: 6px;
+    padding-bottom: 6px;
+  }
+  .st-cleaner-search-row {
+    flex-wrap: nowrap;
+  }
+  .st-cleaner-search-box {
+    flex: 1 1 auto;
+  }
+  .st-cleaner-bulk-btns {
+    width: auto;
+  }
+  .st-cleaner-search-input {
+    height: 32px !important;
   }
   .st-cleaner-footer {
-    padding: 10px 14px;
-    flex-wrap: wrap;
+    flex-direction: row;
+    align-items: center;
+    padding: 7px 16px;
+    gap: 10px;
+  }
+  .st-cleaner-footer-left {
+    width: auto;
+  }
+  .st-cleaner-footer-right {
+    width: auto;
+  }
+  .st-cleaner-footer-right .st-cleaner-primary-btn {
+    flex: 0 0 auto;
+  }
+  .st-cleaner-btn-secondary,
+  .st-cleaner-primary-btn {
+    height: 32px;
+    padding: 0 12px;
   }
 }
