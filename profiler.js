@@ -4,7 +4,7 @@
  * so cold-start overhead is strictly < 1ms and zero fetch monkey-patching is required.
  */
 
-export const BOOT_STORAGE_KEY = 'del_everything_boot_stats_v1';
+export const BOOT_STORAGE_KEY = 'st_cleaner_boot_stats_v1';
 
 /**
  * Safari / older WebView safe idle callback wrapper.
@@ -165,8 +165,15 @@ export function collectStartupSnapshot(perfObj = typeof performance !== 'undefin
     };
   }
 
-  const resources = perfObj.getEntriesByType('resource') || [];
-  const navEntries = perfObj.getEntriesByType('navigation') || [];
+  let resources = [];
+  let navEntries = [];
+  try {
+    resources = Array.isArray(perfObj.getEntriesByType('resource')) ? perfObj.getEntriesByType('resource') : [];
+    navEntries = Array.isArray(perfObj.getEntriesByType('navigation')) ? perfObj.getEntriesByType('navigation') : [];
+  } catch {
+    resources = [];
+    navEntries = [];
+  }
 
   /** @type {Record<string, { intervals: Array<[number, number]>, count: number, bytes: number }>} */
   const acc = {};
@@ -178,6 +185,7 @@ export function collectStartupSnapshot(perfObj = typeof performance !== 'undefin
   let totalBytes = 0;
 
   for (const entry of resources) {
+    if (!entry || typeof entry !== 'object') continue;
     const start = Number(entry.startTime) || 0;
     const end = Number(entry.responseEnd) || start + (Number(entry.duration) || 0);
     if (end > maxEnd) maxEnd = end;
@@ -326,7 +334,7 @@ export function mountSettingsDrawer({ drawerId, getCfg, onToggle, onOpen, bootMs
     wrap.className = 'inline-drawer st-cleaner-settings-drawer';
     wrap.innerHTML = `
       <div class="inline-drawer-toggle inline-drawer-header">
-        <b>数据清理与启动诊断 (delEverything)</b>
+        <b>数据清理与启动诊断 (ST-Cleaner)</b>
         <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
       </div>
       <div class="inline-drawer-content st-cleaner-drawer-body">

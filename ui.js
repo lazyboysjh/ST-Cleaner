@@ -53,7 +53,7 @@ export function escapeHtml(str) {
  */
 function resolveInitialTheme() {
     try {
-        const saved = localStorage.getItem('st_delEverything_theme_v1');
+        const saved = localStorage.getItem('st_cleaner_theme_v1') || localStorage.getItem('st_delEverything_theme_v1');
         if (saved === 'dark' || saved === 'light') return saved;
     } catch {
         // Ignore storage errors
@@ -85,7 +85,7 @@ function findFirstRowAtOffset(rows, targetY) {
 }
 
 /**
- * Opens (or focuses) the delEverything modal.
+ * Opens (or focuses) the ST-Cleaner modal.
  * @param {object} [options]
  * @param {() => any} [options.getContext]
  * @param {typeof fetch} [options.fetchFn]
@@ -102,6 +102,7 @@ export function openCleanerModal(options = {}) {
     const scanner = createScannerSession({
         getContext: options.getContext,
         fetchFn: options.fetchFn,
+        requestTimeoutMs: options.requestTimeoutMs,
     });
 
     const state = {
@@ -143,7 +144,7 @@ export function openCleanerModal(options = {}) {
                     <div class="st-cleaner-brand">
                         <span class="st-cleaner-brand-logo"><i class="fa-solid fa-broom"></i></span>
                         <div class="st-cleaner-brand-meta">
-                            <span class="st-cleaner-brand-name">delEverything</span>
+                            <span class="st-cleaner-brand-name">ST-Cleaner</span>
                             <span class="st-cleaner-brand-tag">数据清理中心</span>
                         </div>
                     </div>
@@ -1001,35 +1002,53 @@ export function openCleanerModal(options = {}) {
             3: refs.sheet.querySelector('[data-stage-status="3"]'),
         };
 
-        const report = await executeBatchDelete({
-            selectedKeys: state.selectedKeys,
-            scanner,
-            skipActive: state.skipActive,
-            getContext: options.getContext,
-            fetchFn: options.fetchFn,
-            saveSettingsImmediate: options.saveSettingsImmediate,
-            onProgress: (prog) => {
-                if (pctEl) pctEl.textContent = `${prog.percent}%`;
-                if (barEl) barEl.style.width = `${Math.max(4, prog.percent)}%`;
-                if (opEl) opEl.textContent = `${prog.stageLabel} · ${prog.currentTitle} (${prog.completed}/${prog.total})`;
+        let report;
+        try {
+            report = await executeBatchDelete({
+                selectedKeys: state.selectedKeys,
+                scanner,
+                skipActive: state.skipActive,
+                getContext: options.getContext,
+                fetchFn: options.fetchFn,
+                saveSettingsImmediate: options.saveSettingsImmediate,
+                requestTimeoutMs: options.requestTimeoutMs,
+                onProgress: (prog) => {
+                    if (pctEl) pctEl.textContent = `${prog.percent}%`;
+                    if (barEl) barEl.style.width = `${Math.max(4, prog.percent)}%`;
+                    if (opEl) opEl.textContent = `${prog.stageLabel} · ${prog.currentTitle} (${prog.completed}/${prog.total})`;
 
-                for (const s of [1, 2, 3]) {
-                    const row = stageRows[s];
-                    const st = stageStatuses[s];
-                    if (!row || !st) continue;
-                    row.classList.remove('is-running', 'is-done');
-                    if (s < prog.stage || prog.percent === 100) {
-                        row.classList.add('is-done');
-                        st.textContent = '已完成 ✓';
-                    } else if (s === prog.stage) {
-                        row.classList.add('is-running');
-                        st.textContent = '执行中...';
-                    } else {
-                        st.textContent = '等待中';
+                    for (const s of [1, 2, 3]) {
+                        const row = stageRows[s];
+                        const st = stageStatuses[s];
+                        if (!row || !st) continue;
+                        row.classList.remove('is-running', 'is-done');
+                        if (s < prog.stage || prog.percent === 100) {
+                            row.classList.add('is-done');
+                            st.textContent = '已完成 ✓';
+                        } else if (s === prog.stage) {
+                            row.classList.add('is-running');
+                            st.textContent = '执行中...';
+                        } else {
+                            st.textContent = '等待中';
+                        }
                     }
-                }
-            },
-        });
+                },
+            });
+        } catch (err) {
+            report = {
+                succeeded: [],
+                skipped: [],
+                failed: [{
+                    key: '__fatal__',
+                    title: '清理任务异常中断',
+                    reason: err?.message || '未知宿主异常',
+                }],
+                requiresReload: false,
+                affectedCategories: [],
+            };
+        } finally {
+            state.isDeleting = false;
+        }
 
         for (const item of report.succeeded) {
             state.selectedKeys.delete(item.key);
@@ -1039,8 +1058,6 @@ export function openCleanerModal(options = {}) {
                 state.selectedKeys.delete(item.key);
             }
         }
-
-        state.isDeleting = false;
 
         const failedHtml = report.failed.length > 0
             ? `<div class="st-cleaner-warn-box">
@@ -1146,7 +1163,7 @@ export function openCleanerModal(options = {}) {
                 state.theme = state.theme === 'dark' ? 'light' : 'dark';
                 root.dataset.theme = state.theme;
                 try {
-                    localStorage.setItem('st_delEverything_theme_v1', state.theme);
+                    localStorage.setItem('st_cleaner_theme_v1', state.theme);
                 } catch {
                     // Ignore storage errors
                 }

@@ -9,6 +9,7 @@
 
 import {
     SELF_EXTENSION_ID,
+    LEGACY_SELF_EXTENSION_ID,
     BUILTIN_COMFY_WORKFLOWS,
     resolveSelfFolderName,
     stripExt,
@@ -159,6 +160,8 @@ function safeEmit(ctx, eventTypeKey, ...args) {
     }
 }
 
+let batchDeleteInFlight = false;
+
 /**
  * Executes the 3-stage safe deletion pipeline.
  *
@@ -170,9 +173,34 @@ function safeEmit(ctx, eventTypeKey, ...args) {
  * @param {typeof fetch} [params.fetchFn]
  * @param {() => Promise<any>} [params.saveSettingsImmediate]
  * @param {string} [params.selfFolderName]
+ * @param {number} [params.requestTimeoutMs=20000]
  * @param {(progress: { stage: number, stageLabel: string, completed: number, total: number, percent: number, currentTitle: string }) => void} [params.onProgress]
  */
 export async function executeBatchDelete(params) {
+    if (batchDeleteInFlight) {
+        const keyArr = Array.from(params?.selectedKeys || []);
+        return {
+            succeeded: [],
+            skipped: [],
+            failed: keyArr.map(key => ({
+                key,
+                title: String(key),
+                reason: '当前已有清理任务正在执行，请勿重复提交',
+            })),
+            requiresReload: false,
+            affectedCategories: [],
+        };
+    }
+
+    batchDeleteInFlight = true;
+    try {
+        return await executeBatchDeleteInternal(params);
+    } finally {
+        batchDeleteInFlight = false;
+    }
+}
+
+async function executeBatchDeleteInternal(params) {
     const {
         selectedKeys,
         scanner,
@@ -182,8 +210,13 @@ export async function executeBatchDelete(params) {
 
     const getContext = params.getContext || (() => globalThis.SillyTavern?.getContext?.() || {});
     const fetchFn = params.fetchFn || ((...args) => globalThis.fetch(...args));
+    const requestTimeoutMs = Number(params.requestTimeoutMs) > 0 ? Number(params.requestTimeoutMs) : 20000;
     const runtimeFolder = (params.selfFolderName || resolveSelfFolderName()).toLowerCase();
-    const forbiddenExtNames = new Set([SELF_EXTENSION_ID.toLowerCase(), runtimeFolder]);
+    const forbiddenExtNames = new Set([
+        SELF_EXTENSION_ID.toLowerCase(),
+        LEGACY_SELF_EXTENSION_ID.toLowerCase(),
+        runtimeFolder,
+    ]);
 
     const ctx = getContext();
     const headers = (() => {
@@ -199,13 +232,31 @@ export async function executeBatchDelete(params) {
 
     async function sendRequest(url, { method = 'POST', body } = {}) {
         const reqHeaders = { ...headers };
-        const init = { method, headers: reqHeaders };
-        if (method !== 'GET' && method !== 'HEAD') {
-            init.body = JSON.stringify(body ?? {});
-        } else {
-            delete reqHeaders['Content-Type'];
+        const controller = new AbortController();
+        let timedOut = false;
+        const timer = setTimeout(() => {
+            timedOut = true;
+            controller.abort();
+        }, requestTimeoutMs);
+
+        try {
+            const init = { method, headers: reqHeaders, signal: controller.signal };
+            if (method !== 'GET' && method !== 'HEAD') {
+                init.body = JSON.stringify(body ?? {});
+            } else {
+                delete reqHeaders['Content-Type'];
+            }
+            return await fetchFn(url, init);
+        } catch (err) {
+            if (timedOut) {
+                const timeoutErr = new Error(`请求超时 (${requestTimeoutMs}ms)`);
+                timeoutErr.code = 'ETIMEDOUT';
+                throw timeoutErr;
+            }
+            throw err;
+        } finally {
+            clearTimeout(timer);
         }
-        return fetchFn(url, init);
     }
 
     const preview = buildDeletionPreview(selectedKeys, scanner, { skipActive });
@@ -329,6 +380,27 @@ export async function executeBatchDelete(params) {
     );
 
     // Partition items into Stage 1, Stage 2, and Stage 3-only tasks
+    // Child items covered by a co-selected parent are held until the parent actually succeeds in Stage 1!
+    const coveredByChar = new Map(); // avatar -> item[]
+    const coveredByGroup = new Map(); // groupId -> item[]
+    const coveredByPreset = new Map(); // apiId::name -> item[]
+    const pushCovered = (map, parentKey, childItem) => {
+        let arr = map.get(parentKey);
+        if (!arr) {
+            arr = [];
+            map.set(parentKey, arr);
+        }
+        arr.push(childItem);
+    };
+    const pushSucceeded = (it) => {
+        succeeded.push({
+            key: it.key,
+            title: it.title,
+            categoryId: it.categoryId,
+            isActive: Boolean(it.isActive),
+        });
+    };
+
     const stage1Tasks = [];
     const dataMaidItems = [];
     const stage2CharOps = new Map(); // avatar -> { items: [], removeRegexIds: Set, clearBook: boolean }
@@ -363,7 +435,7 @@ export async function executeBatchDelete(params) {
 
             case 'char_sprites':
                 if (plannedCharDeletes.has(p.avatar)) {
-                    succeeded.push({ key: item.key, title: item.title, categoryId: item.categoryId });
+                    pushCovered(coveredByChar, p.avatar, item);
                 } else {
                     stage1Tasks.push(item);
                 }
@@ -371,8 +443,8 @@ export async function executeBatchDelete(params) {
 
             case 'char_chat':
                 if (plannedCharDeletes.has(p.avatar)) {
-                    // Covered by character deletion (`delete_chats: true`)
-                    succeeded.push({ key: item.key, title: item.title, categoryId: item.categoryId });
+                    // Covered by character deletion (`delete_chats: true`) once parent succeeds
+                    pushCovered(coveredByChar, p.avatar, item);
                 } else {
                     stage1Tasks.push(item);
                 }
@@ -380,8 +452,8 @@ export async function executeBatchDelete(params) {
 
             case 'group_chat':
                 if (plannedGroupDeletes.has(String(p.groupId))) {
-                    // Covered by group deletion
-                    succeeded.push({ key: item.key, title: item.title, categoryId: item.categoryId });
+                    // Covered by group deletion once parent succeeds
+                    pushCovered(coveredByGroup, String(p.groupId), item);
                 } else {
                     stage1Tasks.push(item);
                 }
@@ -389,7 +461,7 @@ export async function executeBatchDelete(params) {
 
             case 'regex_scoped':
                 if (plannedCharDeletes.has(p.avatar)) {
-                    succeeded.push({ key: item.key, title: item.title, categoryId: item.categoryId });
+                    pushCovered(coveredByChar, p.avatar, item);
                 } else {
                     let op = stage2CharOps.get(p.avatar);
                     if (!op) {
@@ -403,7 +475,7 @@ export async function executeBatchDelete(params) {
 
             case 'th_char':
                 if (plannedCharDeletes.has(p.avatar)) {
-                    succeeded.push({ key: item.key, title: item.title, categoryId: item.categoryId });
+                    pushCovered(coveredByChar, p.avatar, item);
                 } else {
                     let op = stage2CharOps.get(p.avatar);
                     if (!op) {
@@ -417,7 +489,7 @@ export async function executeBatchDelete(params) {
 
             case 'wi_embedded':
                 if (plannedCharDeletes.has(p.avatar)) {
-                    succeeded.push({ key: item.key, title: item.title, categoryId: item.categoryId });
+                    pushCovered(coveredByChar, p.avatar, item);
                 } else {
                     let op = stage2CharOps.get(p.avatar);
                     if (!op) {
@@ -432,7 +504,7 @@ export async function executeBatchDelete(params) {
             case 'regex_preset': {
                 const pKey = `${p.apiId}::${p.presetName}`;
                 if (plannedPresetDeletes.has(pKey)) {
-                    succeeded.push({ key: item.key, title: item.title, categoryId: item.categoryId });
+                    pushCovered(coveredByPreset, pKey, item);
                 } else {
                     let op = stage2PresetOps.get(pKey);
                     if (!op) {
@@ -455,7 +527,7 @@ export async function executeBatchDelete(params) {
             case 'th_preset': {
                 const pKey = `${p.apiId}::${p.presetName}`;
                 if (plannedPresetDeletes.has(pKey)) {
-                    succeeded.push({ key: item.key, title: item.title, categoryId: item.categoryId });
+                    pushCovered(coveredByPreset, pKey, item);
                 } else {
                     let op = stage2PresetOps.get(pKey);
                     if (!op) {
@@ -538,6 +610,28 @@ export async function executeBatchDelete(params) {
             const item = stage1Tasks[idx];
             const p = item.payload;
             emitProgress(1, '第一阶段：并发清理独立文件与资源', item.title);
+
+            const settleCoveredChildren = (didSucceed) => {
+                let coveredList = null;
+                if (p.kind === 'char_card') coveredList = coveredByChar.get(p.avatar);
+                else if (p.kind === 'group') coveredList = coveredByGroup.get(String(p.id));
+                else if (p.kind === 'preset') coveredList = coveredByPreset.get(`${p.apiId}::${p.name}`);
+                if (!coveredList || coveredList.length === 0) return;
+                for (const child of coveredList) {
+                    if (didSucceed) {
+                        pushSucceeded(child);
+                        if (child.payload?.kind === 'regex_scoped' || child.payload?.kind === 'regex_preset') {
+                            deletedRegexIdsAllScopes.add(String(child.payload.scriptId));
+                        }
+                    } else {
+                        failed.push({
+                            key: child.key,
+                            title: child.title,
+                            reason: '所属父项删除未成功，子项已中止清理',
+                        });
+                    }
+                }
+            };
 
             try {
                 let res = null;
@@ -687,10 +781,10 @@ export async function executeBatchDelete(params) {
 
                     case 'char_sprites': {
                         const spArr = Array.isArray(p.sprites) ? p.sprites : [];
-                        let lastRes = { ok: true, status: 200 };
+                        let firstFailedRes = null;
                         for (const sp of spArr) {
                             if (!sp?.label || !sp?.spriteName) continue;
-                            lastRes = await sendRequest('api/sprites/delete', {
+                            const spDelRes = await sendRequest('api/sprites/delete', {
                                 method: 'POST',
                                 body: {
                                     name: p.spriteDirName,
@@ -698,8 +792,11 @@ export async function executeBatchDelete(params) {
                                     spriteName: sp.spriteName,
                                 },
                             });
+                            if (!spDelRes?.ok && spDelRes?.status !== 404 && !firstFailedRes) {
+                                firstFailedRes = spDelRes;
+                            }
                         }
-                        res = lastRes;
+                        res = firstFailedRes || { ok: true, status: 200 };
                         break;
                     }
 
@@ -751,6 +848,7 @@ export async function executeBatchDelete(params) {
                         title: item.title,
                         reason: `服务端返回 HTTP ${res?.status ?? '未知错误'}`,
                     });
+                    settleCoveredChildren(false);
                 } else {
                     if (is404) {
                         skipped.push({
@@ -759,12 +857,9 @@ export async function executeBatchDelete(params) {
                             reason: '磁盘文件已不存在，已同步清理残留引用',
                         });
                     } else {
-                        succeeded.push({
-                            key: item.key,
-                            title: item.title,
-                            categoryId: item.categoryId,
-                        });
+                        pushSucceeded(item);
                     }
+                    settleCoveredChildren(true);
 
                     // Record successful/404 entities for Stage 2 & Stage 3 reference unbinding
                     switch (p.kind) {
@@ -824,6 +919,7 @@ export async function executeBatchDelete(params) {
                     title: item.title,
                     reason: err?.message || '网络请求异常',
                 });
+                settleCoveredChildren(false);
             }
 
             completedUnits++;
@@ -857,7 +953,7 @@ export async function executeBatchDelete(params) {
                 });
                 if (dmRes.ok) {
                     for (const dm of dataMaidItems) {
-                        succeeded.push({ key: dm.key, title: dm.title, categoryId: dm.categoryId });
+                        pushSucceeded(dm);
                     }
                     await sendRequest('api/data-maid/finalize', {
                         method: 'POST',
@@ -977,7 +1073,7 @@ export async function executeBatchDelete(params) {
                             }
                         }
                         for (const subItem of op.items) {
-                            succeeded.push({ key: subItem.key, title: subItem.title, categoryId: subItem.categoryId });
+                            pushSucceeded(subItem);
                         }
                     } else {
                         for (const subItem of op.items) {
@@ -1049,7 +1145,7 @@ export async function executeBatchDelete(params) {
                         }
                         for (const id of op.removeRegexIds) deletedRegexIdsAllScopes.add(id);
                         for (const subItem of op.items) {
-                            succeeded.push({ key: subItem.key, title: subItem.title, categoryId: subItem.categoryId });
+                            pushSucceeded(subItem);
                         }
                     } else {
                         for (const subItem of op.items) {
@@ -1140,7 +1236,7 @@ export async function executeBatchDelete(params) {
                     });
                 }
                 deletedRegexIdsAllScopes.add(String(p.scriptId));
-                succeeded.push({ key: item.key, title: item.title, categoryId: item.categoryId });
+                pushSucceeded(item);
                 break;
             }
             case 'regex_combo': {
@@ -1152,7 +1248,7 @@ export async function executeBatchDelete(params) {
                         return String(c?.name) !== String(p.comboName);
                     });
                 }
-                succeeded.push({ key: item.key, title: item.title, categoryId: item.categoryId });
+                pushSucceeded(item);
                 break;
             }
             case 'th_global': {
@@ -1169,14 +1265,14 @@ export async function executeBatchDelete(params) {
                         removeSet,
                     );
                 }
-                succeeded.push({ key: item.key, title: item.title, categoryId: item.categoryId });
+                pushSucceeded(item);
                 break;
             }
             case 'global_var': {
                 if (extSettings?.variables?.global && typeof extSettings.variables.global === 'object') {
                     delete extSettings.variables.global[p.varKey];
                 }
-                succeeded.push({ key: item.key, title: item.title, categoryId: item.categoryId });
+                pushSucceeded(item);
                 break;
             }
             case 'conn_profile': {
@@ -1191,7 +1287,7 @@ export async function executeBatchDelete(params) {
                         await safeEmit(ctx, 'CONNECTION_PROFILE_DELETED', target);
                     }
                 }
-                succeeded.push({ key: item.key, title: item.title, categoryId: item.categoryId });
+                pushSucceeded(item);
                 break;
             }
             case 'tag': {
@@ -1204,7 +1300,7 @@ export async function executeBatchDelete(params) {
                         tagMap[key] = tagMap[key].filter(tid => tid !== p.id);
                     }
                 }
-                succeeded.push({ key: item.key, title: item.title, categoryId: item.categoryId });
+                pushSucceeded(item);
                 break;
             }
             default:
@@ -1226,6 +1322,16 @@ export async function executeBatchDelete(params) {
             }
         }
     }
+
+    // Preserve active character avatar BEFORE splicing `characters`, so deleting earlier
+    // characters never shifts `ctx.characterId` onto the wrong character, and force-deleting
+    // the active character cleanly resets `ctx.characterId` to `undefined`.
+    const hadActiveCharId = ctx?.characterId !== undefined
+        && ctx?.characterId !== null
+        && ctx?.characterId !== ''
+        && Number(ctx.characterId) >= 0;
+    const prevIdWasString = typeof ctx?.characterId === 'string';
+    const prevActiveAvatar = hadActiveCharId ? characters[Number(ctx.characterId)]?.avatar : null;
 
     // Unbind deleted characters completely & emit native CHARACTER_DELETED
     for (const rec of deletedCharRecords) {
@@ -1289,12 +1395,29 @@ export async function executeBatchDelete(params) {
         await safeEmit(ctx, 'CHARACTER_DELETED', { id: charIdx >= 0 ? charIdx : 0, character: charObj });
     }
 
-    // Unbind deleted groups from ctx.groups
-    if (deletedGroupIds.size > 0 && Array.isArray(ctx?.groups)) {
-        for (let i = ctx.groups.length - 1; i >= 0; i--) {
-            if (deletedGroupIds.has(String(ctx.groups[i]?.id))) {
-                ctx.groups.splice(i, 1);
+    // Re-align `ctx.characterId` after `characters.splice(...)`
+    if (deletedCharRecords.length > 0 && hadActiveCharId) {
+        if (!prevActiveAvatar || deletedCharAvatarSet.has(prevActiveAvatar)) {
+            ctx.characterId = undefined;
+        } else {
+            const newIdx = characters.findIndex(c => c?.avatar === prevActiveAvatar);
+            ctx.characterId = newIdx >= 0
+                ? (prevIdWasString ? String(newIdx) : newIdx)
+                : undefined;
+        }
+    }
+
+    // Unbind deleted groups from ctx.groups & clear active `ctx.groupId` if deleted
+    if (deletedGroupIds.size > 0) {
+        if (Array.isArray(ctx?.groups)) {
+            for (let i = ctx.groups.length - 1; i >= 0; i--) {
+                if (deletedGroupIds.has(String(ctx.groups[i]?.id))) {
+                    ctx.groups.splice(i, 1);
+                }
             }
+        }
+        if (ctx?.groupId !== undefined && ctx?.groupId !== null && deletedGroupIds.has(String(ctx.groupId))) {
+            ctx.groupId = null;
         }
     }
 
@@ -1431,7 +1554,9 @@ export async function executeBatchDelete(params) {
     await flushSaveSettingsImmediate(ctx, params.saveSettingsImmediate, hostMods);
 
     // Refresh live SillyTavern host lists in-place when reload is not required
-    const requiresReload = preview.requiresReload && succeeded.length > 0;
+    // Only require page reload if an ACTUALLY SUCCEEDED deletion was active!
+    const requiresReload = succeeded.some(s => Boolean(s.isActive));
+    const cleanSucceeded = succeeded.map(({ key, title, categoryId }) => ({ key, title, categoryId }));
     if (!requiresReload) {
         if (deletedCharRecords.length > 0 || deletedGroupIds.size > 0) {
             try { await hostMods?.script?.getCharacters?.(); } catch {}
@@ -1458,7 +1583,7 @@ export async function executeBatchDelete(params) {
     emitProgress(3, '清理完成', '所有数据与引用已安全同步');
 
     return {
-        succeeded,
+        succeeded: cleanSucceeded,
         skipped,
         failed,
         requiresReload,

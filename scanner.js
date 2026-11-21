@@ -4,7 +4,8 @@
  * Lazy per-category scanning, shallow-character hydration, strict composite-key whitelist.
  */
 
-export const SELF_EXTENSION_ID = 'delEverything';
+export const SELF_EXTENSION_ID = 'ST-Cleaner';
+export const LEGACY_SELF_EXTENSION_ID = 'delEverything';
 
 /**
  * 9 top-level categories & sub-group definitions for Bento overview + virtualized list.
@@ -384,11 +385,12 @@ export function extractTavernHelperScripts(treeArr) {
                 : node;
             const folderName = String(folderObj.name || node.name || '脚本文件夹');
             const folderEnabled = (folderObj.enabled ?? node.enabled) !== false;
-            const children = Array.isArray(node.scripts)
-                ? node.scripts
-                : (Array.isArray(node.value)
-                    ? node.value
-                    : (Array.isArray(folderObj.scripts) ? folderObj.scripts : []));
+            const rawScriptsField = node.scripts ?? (Array.isArray(node.value) ? node.value : folderObj.scripts);
+            const children = Array.isArray(rawScriptsField)
+                ? rawScriptsField
+                : (rawScriptsField && typeof rawScriptsField === 'object'
+                    ? Object.entries(rawScriptsField).map(([k, v]) => (v && typeof v === 'object' ? { id: v.id ?? k, ...v } : null))
+                    : []);
             for (let k = 0; k < children.length; k++) {
                 const rawChild = children[k]?.type === 'script' && children[k]?.value ? children[k].value : children[k];
                 if (!rawChild || typeof rawChild !== 'object') continue;
@@ -457,6 +459,30 @@ export function pruneTavernHelperTree(treeArr, removeIdSet) {
                 if (kept.length > 0 || node.value.scripts.length === 0) {
                     nextTree.push({ ...node, value: { ...node.value, scripts: kept } });
                 }
+            } else if (node.value && typeof node.value === 'object' && node.value.scripts && typeof node.value.scripts === 'object') {
+                const nextMap = {};
+                const origEntries = Object.entries(node.value.scripts);
+                for (const [k, val] of origEntries) {
+                    const sid = String(val?.id ?? k);
+                    if (!removeIdSet.has(sid)) {
+                        nextMap[k] = val;
+                    }
+                }
+                if (Object.keys(nextMap).length > 0 || origEntries.length === 0) {
+                    nextTree.push({ ...node, value: { ...node.value, scripts: nextMap } });
+                }
+            } else if (node.scripts && typeof node.scripts === 'object' && !Array.isArray(node.scripts)) {
+                const nextMap = {};
+                const origEntries = Object.entries(node.scripts);
+                for (const [k, val] of origEntries) {
+                    const sid = String(val?.id ?? k);
+                    if (!removeIdSet.has(sid)) {
+                        nextMap[k] = val;
+                    }
+                }
+                if (Object.keys(nextMap).length > 0 || origEntries.length === 0) {
+                    nextTree.push({ ...node, scripts: nextMap });
+                }
             } else {
                 nextTree.push(node);
             }
@@ -490,6 +516,7 @@ export function createScannerSession(options = {}) {
     const runtimeFolder = options.selfFolderName || resolveSelfFolderName();
     const excludedExtNames = new Set([
         SELF_EXTENSION_ID.toLowerCase(),
+        LEGACY_SELF_EXTENSION_ID.toLowerCase(),
         String(runtimeFolder || '').toLowerCase(),
     ]);
 
@@ -503,6 +530,7 @@ export function createScannerSession(options = {}) {
     let unshallowDone = false;
     let dataMaidToken = null;
     let dataMaidAvailable = null;
+    const requestTimeoutMs = Number(options.requestTimeoutMs) > 0 ? Number(options.requestTimeoutMs) : 15000;
 
     function getHeaders(ctx) {
         try {
@@ -516,51 +544,91 @@ export function createScannerSession(options = {}) {
     }
 
     async function apiJson(url, { method = 'POST', body, signal, allow404 = false } = {}) {
+        if (signal?.aborted) {
+            throw new DOMException('Scan aborted', 'AbortError');
+        }
         const ctx = getContext();
         const headers = { ...getHeaders(ctx) };
-        const init = { method, headers, signal };
-        if (method !== 'GET' && method !== 'HEAD') {
-            init.body = JSON.stringify(body ?? {});
-        } else {
-            delete headers['Content-Type'];
+        const controller = new AbortController();
+        let timedOut = false;
+        const onExternalAbort = () => controller.abort();
+        if (signal) {
+            signal.addEventListener('abort', onExternalAbort, { once: true });
         }
-        const res = await fetchFn(url, init);
-        if (allow404 && res.status === 404) {
-            return { __notFound: true, status: 404 };
-        }
-        if (!res.ok) {
-            const err = new Error(`HTTP ${res.status} on ${url}`);
-            err.status = res.status;
-            throw err;
-        }
-        const text = await res.text();
-        if (!text) return null;
+        const timer = setTimeout(() => {
+            timedOut = true;
+            controller.abort();
+        }, requestTimeoutMs);
+
         try {
-            return JSON.parse(text);
-        } catch {
-            return text;
+            const init = { method, headers, signal: controller.signal };
+            if (method !== 'GET' && method !== 'HEAD') {
+                init.body = JSON.stringify(body ?? {});
+            } else {
+                delete headers['Content-Type'];
+            }
+            const res = await fetchFn(url, init);
+            if (allow404 && res.status === 404) {
+                return { __notFound: true, status: 404 };
+            }
+            if (!res.ok) {
+                const err = new Error(`HTTP ${res.status} on ${url}`);
+                err.status = res.status;
+                throw err;
+            }
+            const text = await res.text();
+            if (!text) return null;
+            try {
+                return JSON.parse(text);
+            } catch {
+                return text;
+            }
+        } catch (err) {
+            if (signal?.aborted) {
+                throw new DOMException('Scan aborted', 'AbortError');
+            }
+            if (timedOut) {
+                const timeoutErr = new Error(`请求超时 (${requestTimeoutMs}ms): ${url}`);
+                timeoutErr.code = 'ETIMEDOUT';
+                throw timeoutErr;
+            }
+            throw err;
+        } finally {
+            clearTimeout(timer);
+            if (signal) {
+                signal.removeEventListener('abort', onExternalAbort);
+            }
         }
     }
 
     async function getSettingsSnapshot(signal, force = false) {
+        if (signal?.aborted) {
+            throw new DOMException('Scan aborted', 'AbortError');
+        }
         if (settingsSnapshot && !force) return settingsSnapshot;
-        if (settingsPromise && !force) return settingsPromise;
-        settingsPromise = apiJson('api/settings/get', { method: 'POST', body: {}, signal })
-            .then((data) => {
-                const normalized = data && typeof data === 'object' ? { ...data } : {};
-                if (typeof normalized.settings === 'string') {
-                    normalized.settings = parseMaybeJsonObject(normalized.settings);
-                }
-                settingsSnapshot = normalized;
-                settingsPromise = null;
-                return settingsSnapshot;
-            })
-            .catch(() => {
-                settingsPromise = null;
-                settingsSnapshot = {};
-                return settingsSnapshot;
-            });
-        return settingsPromise;
+        if (!settingsPromise || force) {
+            // Do not tie shared session metadata promise to one transient tab signal,
+            // and never cache `{}` on transient failure so subsequent scans can retry cleanly.
+            settingsPromise = apiJson('api/settings/get', { method: 'POST', body: {} })
+                .then((data) => {
+                    const normalized = data && typeof data === 'object' ? { ...data } : {};
+                    if (typeof normalized.settings === 'string') {
+                        normalized.settings = parseMaybeJsonObject(normalized.settings);
+                    }
+                    settingsSnapshot = normalized;
+                    settingsPromise = null;
+                    return settingsSnapshot;
+                })
+                .catch(() => {
+                    settingsPromise = null;
+                    return {};
+                });
+        }
+        const res = await settingsPromise;
+        if (signal?.aborted) {
+            throw new DOMException('Scan aborted', 'AbortError');
+        }
+        return res;
     }
 
     function checkIsAdmin(ctx, settingsData) {
@@ -615,7 +683,10 @@ export function createScannerSession(options = {}) {
                             charObj.shallow = false;
                         }
                     }
-                } catch {
+                } catch (err) {
+                    if (err?.name === 'AbortError' || signal?.aborted) {
+                        throw new DOMException('Scan aborted', 'AbortError');
+                    }
                     // Keep existing partial entry rather than aborting entire scan
                 }
                 done++;
@@ -623,7 +694,9 @@ export function createScannerSession(options = {}) {
             }, signal);
         }
 
-        unshallowDone = true;
+        if (!signal?.aborted) {
+            unshallowDone = true;
+        }
         return characters;
     }
 
@@ -836,7 +909,11 @@ export function createScannerSession(options = {}) {
         const activeCharAvatar = activeCharIndex >= 0 ? characters[activeCharIndex]?.avatar : null;
         const activeGroupId = ctx?.groupId ?? ctx?.selected_group ?? null;
         const tagMap = ctx?.tagMap || ctx?.tag_map || {};
-        const tagsById = new Map((Array.isArray(ctx?.tags) ? ctx.tags : []).map(t => [t.id, t.name]));
+        const tagsById = new Map(
+            (Array.isArray(ctx?.tags) ? ctx.tags : [])
+                .filter(t => t && t.id !== undefined && t.id !== null)
+                .map(t => [t.id, t.name]),
+        );
 
         const charItems = [];
         for (const ch of characters) {
@@ -1333,10 +1410,17 @@ export function createScannerSession(options = {}) {
         // 8. Persistent ST Global Script Variables (`extension_settings.variables.global`)
         const globalVarItems = [];
         const globalVarsObj = extSettings?.variables?.global;
-        if (globalVarsObj && typeof globalVarsObj === 'object') {
+        if (globalVarsObj && typeof globalVarsObj === 'object' && !Array.isArray(globalVarsObj)) {
             for (const [varKey, rawVal] of Object.entries(globalVarsObj)) {
                 if (!varKey) continue;
-                const valStr = typeof rawVal === 'object' ? JSON.stringify(rawVal) : String(rawVal ?? '');
+                let valStr = '';
+                try {
+                    valStr = rawVal !== null && typeof rawVal === 'object'
+                        ? (JSON.stringify(rawVal) ?? '')
+                        : String(rawVal ?? '');
+                } catch {
+                    valStr = '[复杂对象]';
+                }
                 globalVarItems.push(registerItem({
                     key: `gvar:${varKey}`,
                     categoryId: 'regex',
@@ -1734,7 +1818,11 @@ export function createScannerSession(options = {}) {
         const extSettings = ctx?.extensionSettings || ctx?.extension_settings || {};
         const chatMeta = ctx?.chatMetadata || ctx?.chat_metadata || {};
         const characters = Array.isArray(ctx?.characters) ? ctx.characters : [];
-        const charByAvatar = new Map(characters.map(c => [c.avatar, c.name || stripExt(c.avatar, '.png')]));
+        const charByAvatar = new Map(
+            characters
+                .filter(c => c && c.avatar)
+                .map(c => [c.avatar, c.name || stripExt(c.avatar, '.png')]),
+        );
         const settingsData = await getSettingsSnapshot(signal);
 
         // 1. Quick Replies
@@ -2002,7 +2090,7 @@ export function createScannerSession(options = {}) {
                 const rawName = String(ext.name);
                 const strippedName = rawName.replace(/^third-party\//i, '');
                 if (!strippedName || excludedExtNames.has(strippedName.toLowerCase())) {
-                    continue; // Strictly never list delEverything / self
+                    continue; // Strictly never list ST-Cleaner / self
                 }
                 const isGlobal = ext.type === 'global';
                 if (isGlobal && !isAdmin) {
@@ -2236,6 +2324,11 @@ export function createScannerSession(options = {}) {
                 throw new Error(`Unknown category: ${categoryId}`);
         }
 
+        if (signal?.aborted) {
+            unregisterCategoryKeys(categoryId);
+            throw new DOMException('Scan aborted', 'AbortError');
+        }
+
         const groups = Array.isArray(rawResult) ? rawResult : rawResult.groups;
         const warnings = Array.isArray(rawResult) ? [] : (rawResult.warnings || []);
 
@@ -2290,6 +2383,7 @@ export function createScannerSession(options = {}) {
         getOverviewSummary,
         warmOverviewMetadata,
         scanCategory,
+        getCachedCategory: (cid) => categoryCache.get(cid) || null,
         invalidateCategories,
         getDataMaidToken: () => dataMaidToken,
         getSettingsSnapshot,

@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🧹 delEverything — 数据清理与启动诊断
+# 🧹 ST-Cleaner — 数据清理与启动诊断
 
 **专为 SillyTavern（酒馆）打造的零依赖、超轻量全量数据清理中心与冷启动耗时诊断扩展**
 
@@ -20,7 +20,7 @@
 
 长期使用 SillyTavern 后，酒馆目录往往会堆积上百张测试角色卡、立绘表情包、废弃聊天分支、冗余世界书、失效正则、**酒馆助手 (`JS-Slash-Runner`) 脚本**、旧版预设模板、生图工作流以及孤儿缩略图，导致 **首屏启动变慢、列表检索困难、手机端内存吃紧**，而逐个手动删除不仅繁琐，还容易残留引用或误删共享资源。
 
-**`delEverything`** 提供一站式解决方案：
+**`ST-Cleaner`** 提供一站式解决方案：
 - **平时零负担**：冷启动入口仅 **`2.2 KB`**，不引入任何第三方库；仅在点击打开面板时按需动态加载扫描与界面模块，关闭窗口即销毁 DOM 与缓存。
 - **可量化的启动诊断**：静默采集浏览器 `Resource Timing` 并集墙钟耗时，直观对比 **「本次启动 vs 上次启动」** 提速幅度，定位拖慢酒馆的具体模块。
 - **全分类级联安全清理**：覆盖 **9 大分类、30 种细分数据类型**（含酒馆助手全局/角色/预设脚本与文件夹嵌套树、独立立绘表情包、ST 全局持久变量、音效资产、ComfyUI 工作流等），内置汉字全拼/首字母模糊检索、定高窗口虚拟列表与 **三阶段合并写回引擎**，删得干净且绝不误伤正在使用的配置或 API 密钥。
@@ -80,7 +80,7 @@
 2. 点击 **安装扩展 (Install extension)** 按钮。
 3. 在弹出的输入框中粘贴以下仓库地址：
    ```text
-   https://github.com/lazyboysjh/delEverything
+   https://github.com/lazyboysjh/ST-Cleaner
    ```
 4. 选择安装范围（单用户推荐默认 `Install just for me`），点击确认后刷新页面即可生效。
 
@@ -90,7 +90,7 @@
 
 ```bash
 cd SillyTavern/data/default-user/extensions
-git clone https://github.com/lazyboysjh/delEverything
+git clone https://github.com/lazyboysjh/ST-Cleaner
 ```
 
 完成后刷新浏览器页面即可。
@@ -102,7 +102,7 @@ git clone https://github.com/lazyboysjh/delEverything
 ### 第一步：打开清理中心与管理插件开关
 安装并刷新酒馆后，你可以通过以下任意一个入口唤起面板：
 - **日常快捷入口**：点击聊天输入框左下角的 **魔法棒图标 (`✨`)** → 选择 **「数据清理与启动诊断」**。
-- **扩展设置入口**：点击顶部 **扩展 (`Extensions`)** → 展开 **「数据清理与启动诊断 (delEverything)」**：
+- **扩展设置入口**：点击顶部 **扩展 (`Extensions`)** → 展开 **「数据清理与启动诊断 (ST-Cleaner)」**：
   - **启用插件总开关**：取消勾选后立即卸载快捷入口并停止后台工作，无需删除插件目录。
   - **在左下角魔法棒菜单显示入口**：觉得魔法棒菜单拥挤时可单独隐藏，仅保留扩展面板内的启动按钮。
   - **静默记录启动耗时对比**：控制是否在每次刷新页面时对比启动速度变化。
@@ -146,7 +146,7 @@ git clone https://github.com/lazyboysjh/delEverything
 
 ## 🛡️ 多重防误删与安全保障
 
-1. **核心配置文件硬隔离**：任何操作均不会删除 `settings.json`、`secrets.json`、`config.yaml`、`default/` 官方初始种子资源、系统内置扩展及 `delEverything` 自身。
+1. **核心配置文件硬隔离**：任何操作均不会删除 `settings.json`、`secrets.json`、`config.yaml`、`default/` 官方初始种子资源、系统内置扩展及 `ST-Cleaner` 自身。
 2. **「正在使用」全链路识别**：自动检测当前打开的角色/群聊、正在聊天的会话、已启用的全局/局部/预设正则、全局及当前角色绑定的世界书、各引擎当前选中预设、激活中的 API 插头、当前人设头像与当前主题。
 3. **白名单与路径穿越拦截**：所有待删键值均须通过当次扫描会话白名单校验，文件名严格校验单层合法令牌与受控相对路径（如 `user/files/*`、`user/images/*`），拦截一切 `..` 越界访问。
 4. **三阶段事务级批处理引擎**：

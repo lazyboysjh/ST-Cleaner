@@ -1,5 +1,5 @@
 {
-  "display_name": "数据清理与启动诊断 (delEverything)",
+  "display_name": "数据清理与启动诊断 (ST-Cleaner)",
   "loading_order": 50,
   "requires": [],
   "optional": [],
@@ -7,6 +7,6 @@
   "css": "style.css",
   "author": "lazyboysjh",
   "version": "1.0.0",
-  "homePage": "https://github.com/lazyboysjh/delEverything",
+  "homePage": "https://github.com/lazyboysjh/ST-Cleaner",
   "auto_update": true
 }

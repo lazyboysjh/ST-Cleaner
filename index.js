@@ -1,4 +1,4 @@
-const KEY = 'delEverything';
+const KEY = 'ST-Cleaner';
 const WAND = 'st-cleaner-wand-entry';
 const DRAWER = 'st-cleaner-settings-drawer';
 const DEF = { enabled: true, showWandButton: true, enableBootProfiler: true };
@@ -7,7 +7,7 @@ const idle = (fn) => (globalThis.requestIdleCallback ? requestIdleCallback(fn, {
 
 function cfg() {
   const s = ctx()?.extensionSettings || ctx()?.extension_settings;
-  return s ? (s[KEY] = Object.assign({}, DEF, s[KEY])) : { ...DEF };
+  return s ? (s[KEY] = Object.assign({}, DEF, s.delEverything, s[KEY])) : { ...DEF };
 }
 
 async function openModal() {
