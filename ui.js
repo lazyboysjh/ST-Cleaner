@@ -185,10 +185,31 @@ export function openCleanerModal(options = {}) {
 
     const getLiveCtx = options.getContext || (() => globalThis.SillyTavern?.getContext?.() || {});
 
+    const SORT_LABELS = {
+        default: '默认顺序',
+        cleanable_first: '闲置优先',
+        name_asc: '名称 A→Z',
+        name_desc: '名称 Z→A',
+        time_desc: '最新优先',
+        time_asc: '最早旧档',
+        metric_desc: '体量优先',
+    };
+    const SORT_OPTIONS = [
+        { value: 'default', label: '默认顺序' },
+        { value: 'cleanable_first', label: '闲置可删优先' },
+        { value: 'name_asc', label: '名称 A → Z' },
+        { value: 'name_desc', label: '名称 Z → A' },
+        { value: 'time_desc', label: '时间：最新优先' },
+        { value: 'time_asc', label: '时间：最早旧档' },
+        { value: 'metric_desc', label: '体量 / 条数优先' },
+    ];
+
     let isDisposed = false;
     const state = {
         theme: resolveInitialTheme(),
         activeTab: options.initialTab === 'workspace' ? 'workspace' : 'overview',
+        sheetMode: null, // null | 'confirm' | 'filter' | 'cats'
+        matchedCount: 0,
         diagTab: 'perf', // 'perf' | 'health' | 'requests'
         isDeepScanning: false,
         deepScanText: '',
@@ -245,7 +266,18 @@ export function openCleanerModal(options = {}) {
                 <div class="st-cleaner-canvas">
                     <header class="st-cleaner-header">
                         <div class="st-cleaner-header-titles">
-                            <h2 class="st-cleaner-page-title" data-ref="page-title">数据总览</h2>
+                            <div class="st-cleaner-header-title-line">
+                                <button type="button" class="st-cleaner-mobile-back" data-action="nav-overview" data-ref="mobile-back" hidden aria-label="返回数据总览">
+                                    <i class="fa-solid fa-chevron-left"></i>
+                                    <span>总览</span>
+                                </button>
+                                <h2 class="st-cleaner-page-title" data-ref="page-title">数据总览</h2>
+                                <button type="button" class="st-cleaner-mobile-cat-trigger" data-action="open-cat-sheet" data-ref="mobile-cat-trigger" hidden aria-label="切换数据分类">
+                                    <span data-ref="mobile-cat-title">分类清理</span>
+                                    <span class="st-cleaner-mobile-cat-dot" data-ref="mobile-cat-dot" hidden></span>
+                                    <i class="fa-solid fa-chevron-down st-cleaner-mobile-cat-caret"></i>
+                                </button>
+                            </div>
                             <p class="st-cleaner-page-sub" data-ref="page-sub">查看启动耗时分布与全部 9 大类可清理资产</p>
                         </div>
                         <div class="st-cleaner-top-actions">
@@ -261,8 +293,6 @@ export function openCleanerModal(options = {}) {
                         </div>
                     </header>
 
-                    <div class="st-cleaner-mobile-cats" data-ref="mobile-cats" role="tablist" aria-label="分类导航"></div>
-
                     <section class="st-cleaner-overview st-cleaner-scroll" data-view="overview">
                         <div class="st-cleaner-bento-grid" data-ref="bento-grid"></div>
                         <div class="st-cleaner-stats-panel" data-ref="boot-card"></div>
@@ -277,7 +307,7 @@ export function openCleanerModal(options = {}) {
                                         type="search"
                                         class="st-cleaner-search-input"
                                         data-ref="search-input"
-                                        placeholder="搜索名称 / 全拼 / 首字母 (如 kl、kelai、酒馆助手)..."
+                                        placeholder="搜索名称 / 全拼 / 首字母..."
                                         autocomplete="off"
                                         spellcheck="false"
                                     />
@@ -285,6 +315,10 @@ export function openCleanerModal(options = {}) {
                                         <i class="fa-solid fa-circle-xmark"></i>
                                     </button>
                                 </div>
+                                <button type="button" class="st-cleaner-mobile-filter-btn" data-action="open-filter-sheet" data-ref="mobile-filter-btn" aria-label="打开筛选与排序面板">
+                                    <i class="fa-solid fa-sliders"></i>
+                                    <span data-ref="mobile-filter-btn-text">筛选</span>
+                                </button>
                                 <div class="st-cleaner-sort-wrap" title="切换列表排序规则">
                                     <i class="fa-solid fa-arrow-down-wide-short st-cleaner-sort-icon"></i>
                                     <select class="st-cleaner-sort-select" data-ref="sort-select" aria-label="排序规则">
@@ -300,6 +334,16 @@ export function openCleanerModal(options = {}) {
                                 <div class="st-cleaner-bulk-btns">
                                     <button type="button" class="st-cleaner-btn-ghost" data-action="select-visible">全选结果</button>
                                     <button type="button" class="st-cleaner-btn-ghost is-muted" data-action="deselect-visible">取消本页</button>
+                                </div>
+                            </div>
+                            <div class="st-cleaner-mobile-bar" data-ref="mobile-bar">
+                                <button type="button" class="st-cleaner-mobile-summary-chip" data-action="open-filter-sheet" data-ref="mobile-summary-chip">
+                                    <span class="st-cleaner-mobile-summary-text" data-ref="mobile-summary-text">全部 · 默认顺序</span>
+                                    <i class="fa-solid fa-chevron-down"></i>
+                                </button>
+                                <div class="st-cleaner-mobile-quick-btns">
+                                    <button type="button" class="st-cleaner-btn-ghost" data-action="select-visible">全选</button>
+                                    <button type="button" class="st-cleaner-btn-ghost is-muted" data-action="deselect-visible">取消</button>
                                 </div>
                             </div>
                             <div class="st-cleaner-subpills" data-ref="subpills"></div>
@@ -357,12 +401,19 @@ export function openCleanerModal(options = {}) {
     const refs = {
         pageTitle: root.querySelector('[data-ref="page-title"]'),
         pageSub: root.querySelector('[data-ref="page-sub"]'),
+        mobileBack: root.querySelector('[data-ref="mobile-back"]'),
+        mobileCatTrigger: root.querySelector('[data-ref="mobile-cat-trigger"]'),
+        mobileCatTitle: root.querySelector('[data-ref="mobile-cat-title"]'),
+        mobileCatDot: root.querySelector('[data-ref="mobile-cat-dot"]'),
+        mobileFilterBtn: root.querySelector('[data-ref="mobile-filter-btn"]'),
+        mobileFilterBtnText: root.querySelector('[data-ref="mobile-filter-btn-text"]'),
+        mobileSummaryChip: root.querySelector('[data-ref="mobile-summary-chip"]'),
+        mobileSummaryText: root.querySelector('[data-ref="mobile-summary-text"]'),
         overviewSection: root.querySelector('[data-view="overview"]'),
         workspaceSection: root.querySelector('[data-view="workspace"]'),
         bootCard: root.querySelector('[data-ref="boot-card"]'),
         bentoGrid: root.querySelector('[data-ref="bento-grid"]'),
         sidebar: root.querySelector('[data-ref="sidebar"]'),
-        mobileCats: root.querySelector('[data-ref="mobile-cats"]'),
         searchInput: root.querySelector('[data-ref="search-input"]'),
         searchClear: root.querySelector('[data-action="clear-search"]'),
         sortSelect: root.querySelector('[data-ref="sort-select"]'),
@@ -404,18 +455,25 @@ export function openCleanerModal(options = {}) {
     }
 
     function updateHeaderTitles() {
+        root.dataset.viewMode = state.activeTab;
         if (state.activeTab === 'overview') {
             refs.pageTitle.textContent = '数据总览';
             refs.pageSub.textContent = '按分类浏览酒馆数据资产、酒馆助手脚本与本次启动耗时统计';
+            if (refs.mobileBack) refs.mobileBack.hidden = true;
+            if (refs.mobileCatTrigger) refs.mobileCatTrigger.hidden = true;
         } else {
             const def = catDefMap.get(state.activeCategory);
-            refs.pageTitle.textContent = def ? def.label : '分类清理';
+            const label = def ? def.label : '分类清理';
+            refs.pageTitle.textContent = label;
             refs.pageSub.textContent = def ? def.shortDesc : '勾选不需要的冗余资产进行安全批量清理';
+            if (refs.mobileBack) refs.mobileBack.hidden = false;
+            if (refs.mobileCatTrigger) refs.mobileCatTrigger.hidden = false;
+            if (refs.mobileCatTitle) refs.mobileCatTitle.textContent = label;
         }
     }
 
     // =========================================================================
-    // Persistent Left Sidebar & Mobile Top Strip (Unified Navigation)
+    // Persistent Left Sidebar & Mobile Header State
     // =========================================================================
     function renderNavigation() {
         const overviewSummary = scanner.getOverviewSummary();
@@ -469,42 +527,9 @@ export function openCleanerModal(options = {}) {
 
         refs.sidebar.innerHTML = overviewNavHtml + catItemsHtml;
 
-        const mobileOverviewPill = `
-            <button
-                type="button"
-                class="st-cleaner-cat-pill ${isOverview ? 'is-active' : ''}"
-                data-action="nav-overview"
-            >
-                <i class="fa-solid fa-table-cells-large"></i>
-                <span>总览</span>
-            </button>
-        `;
-        const mobileCatPills = CATEGORY_DEFS.map(def => {
-            const isActive = !isOverview && def.id === state.activeCategory;
-            const selCount = selectedByCat.get(def.id) || 0;
-            return `
-                <button
-                    type="button"
-                    class="st-cleaner-cat-pill ${isActive ? 'is-active' : ''}"
-                    data-action="select-category"
-                    data-cat="${escapeHtml(def.id)}"
-                >
-                    <i class="${escapeHtml(def.icon)}"></i>
-                    <span>${escapeHtml(def.label)}</span>
-                    ${selCount > 0 ? `<span class="st-cleaner-pill-sel">${selCount}</span>` : ''}
-                </button>
-            `;
-        }).join('');
-        const prevMobileScroll = refs.mobileCats.scrollLeft;
-        refs.mobileCats.innerHTML = mobileOverviewPill + mobileCatPills;
-        refs.mobileCats.scrollLeft = prevMobileScroll;
-        const activeMobilePill = refs.mobileCats.querySelector('.st-cleaner-cat-pill.is-active');
-        if (activeMobilePill && typeof activeMobilePill.scrollIntoView === 'function') {
-            try {
-                activeMobilePill.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-            } catch {
-                // Ignore older browser scrollIntoView option quirks
-            }
+        if (refs.mobileCatDot) {
+            const otherCatSelected = totalSelected - (selectedByCat.get(state.activeCategory) || 0);
+            refs.mobileCatDot.hidden = otherCatSelected <= 0;
         }
     }
 
@@ -765,14 +790,10 @@ export function openCleanerModal(options = {}) {
         renderFacets(categoryRecord);
     }
 
-    function renderFacets(categoryRecord) {
+    function computeVisibleFacets(categoryRecord) {
         if (!categoryRecord || !Array.isArray(categoryRecord.facets) || categoryRecord.facets.length === 0) {
-            refs.facetbar.hidden = true;
-            refs.facetbar.innerHTML = '';
-            return;
+            return [];
         }
-
-        // Recompute counts scoped to the currently active subgroup so pills never show stale numbers
         const scopedCounts = new Map();
         for (const g of categoryRecord.groups || []) {
             if (state.activeSubgroup !== 'all' && g.id !== state.activeSubgroup) continue;
@@ -783,11 +804,45 @@ export function openCleanerModal(options = {}) {
                 }
             }
         }
-
-        const visibleFacets = categoryRecord.facets
+        return categoryRecord.facets
             .map(f => ({ ...f, scopedCount: scopedCounts.get(f.id) || 0 }))
             .filter(f => f.scopedCount > 0);
+    }
 
+    function updateMobileToolbarSummary(categoryRecord) {
+        const activeFilters = (state.activeSubgroup !== 'all' ? 1 : 0)
+            + (state.activeFacet !== 'all' ? 1 : 0)
+            + (state.sortBy !== 'default' ? 1 : 0);
+
+        if (refs.mobileFilterBtn && refs.mobileFilterBtnText) {
+            refs.mobileFilterBtn.classList.toggle('is-active', activeFilters > 0);
+            refs.mobileFilterBtnText.textContent = activeFilters > 0 ? `筛选 · ${activeFilters}` : '筛选';
+        }
+
+        if (refs.mobileSummaryText && refs.mobileSummaryChip) {
+            const groups = categoryRecord?.groups || [];
+            const subObj = state.activeSubgroup !== 'all'
+                ? groups.find(g => g.id === state.activeSubgroup)
+                : null;
+            const subLabel = subObj ? subObj.label : '全部';
+
+            let facetLabel = '';
+            if (state.activeFacet !== 'all' && Array.isArray(categoryRecord?.facets)) {
+                const fObj = categoryRecord.facets.find(f => f.id === state.activeFacet);
+                if (fObj) facetLabel = fObj.label;
+            }
+
+            const sortLabel = SORT_LABELS[state.sortBy] || '默认顺序';
+            const parts = [subLabel];
+            if (facetLabel) parts.push(facetLabel);
+            parts.push(sortLabel);
+            refs.mobileSummaryText.textContent = `${parts.join(' · ')} (${state.matchedCount})`;
+            refs.mobileSummaryChip.classList.toggle('has-active-filter', activeFilters > 0);
+        }
+    }
+
+    function renderFacets(categoryRecord) {
+        const visibleFacets = computeVisibleFacets(categoryRecord);
         if (visibleFacets.length === 0) {
             state.activeFacet = 'all';
             refs.facetbar.hidden = true;
@@ -884,8 +939,10 @@ export function openCleanerModal(options = {}) {
             offsetY += GROUP_BOTTOM_GAP;
         }
 
+        state.matchedCount = matchedItemCount;
         state.totalVirtualHeight = offsetY + 8;
         refs.spacer.style.height = `${state.totalVirtualHeight}px`;
+        updateMobileToolbarSummary(categoryRecord);
 
         if (matchedItemCount === 0) {
             refs.spacer.hidden = true;
@@ -1191,10 +1248,156 @@ export function openCleanerModal(options = {}) {
     }
 
     // =========================================================================
+    // Mobile Native-Grade Bottom Sheets: 1) Category Grid Switcher, 2) Filter & Sort
+    // =========================================================================
+    function openCategorySwitcherSheet() {
+        hidePopover();
+        state.sheetMode = 'cats';
+        const overviewSummary = scanner.getOverviewSummary();
+        const selectedByCat = countSelectedByCategory();
+        const totalSelected = state.selectedKeys.size;
+
+        const gridHtml = CATEGORY_DEFS.map(def => {
+            const isAct = state.activeTab === 'workspace' && def.id === state.activeCategory;
+            const info = overviewSummary[def.id];
+            const selCount = selectedByCat.get(def.id) || 0;
+            const countLabel = info?.count !== null && info?.count !== undefined ? info.count : '浏览';
+            return `
+                <button
+                    type="button"
+                    class="st-cleaner-mcat-card ${isAct ? 'is-active' : ''}"
+                    data-action="pick-mobile-cat"
+                    data-cat="${escapeHtml(def.id)}"
+                >
+                    <div class="st-cleaner-mcat-top">
+                        <span class="st-cleaner-mcat-icon"><i class="${escapeHtml(def.icon)}"></i></span>
+                        <span class="st-cleaner-mcat-meta">
+                            ${selCount > 0 ? `<span class="st-cleaner-nav-badge">${selCount}</span>` : ''}
+                            <span class="st-cleaner-mcat-count">${escapeHtml(countLabel)}</span>
+                        </span>
+                    </div>
+                    <div class="st-cleaner-mcat-name">${escapeHtml(def.label)}</div>
+                </button>
+            `;
+        }).join('');
+
+        refs.sheet.innerHTML = `
+            <div class="st-cleaner-sheet-head">
+                <div>
+                    <div class="st-cleaner-sheet-title">切换数据分类</div>
+                    <div class="st-cleaner-sheet-sub">9 大类完整展示 · 点击即切换</div>
+                </div>
+                <button type="button" class="st-cleaner-icon-btn" data-action="close-sheet" aria-label="关闭分类菜单">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+            <div class="st-cleaner-sheet-body st-cleaner-scroll">
+                <button type="button" class="st-cleaner-mcat-overview" data-action="pick-mobile-overview">
+                    <span class="st-cleaner-mcat-ov-left">
+                        <i class="fa-solid fa-table-cells-large"></i>
+                        <span>返回数据总览与启动体检</span>
+                    </span>
+                    <span class="st-cleaner-mcat-ov-right">
+                        ${totalSelected > 0 ? `<span class="st-cleaner-nav-badge">已选 ${totalSelected}</span>` : ''}
+                        <i class="fa-solid fa-chevron-right"></i>
+                    </span>
+                </button>
+                <div class="st-cleaner-mcat-grid">
+                    ${gridHtml}
+                </div>
+            </div>
+        `;
+        refs.sheetMask.hidden = false;
+    }
+
+    function renderFilterSortSheetContent() {
+        const record = currentCategoryRecord;
+        const groups = record?.groups || [];
+        const allCount = record?.totalCount || 0;
+        const visibleFacets = computeVisibleFacets(record);
+        const isDefaultAll = state.activeSubgroup === 'all' && state.activeFacet === 'all' && state.sortBy === 'default';
+
+        const subPillsHtml = [
+            `<button type="button" class="st-cleaner-mfilter-pill ${state.activeSubgroup === 'all' ? 'is-active' : ''}" data-action="sheet-sub" data-sub="all">全部 <em>${allCount}</em></button>`,
+            ...groups.map(g => {
+                const isAct = state.activeSubgroup === g.id;
+                return `<button type="button" class="st-cleaner-mfilter-pill ${isAct ? 'is-active' : ''}" data-action="sheet-sub" data-sub="${escapeHtml(g.id)}">${escapeHtml(g.label)} <em>${g.items.length}</em></button>`;
+            }),
+        ].join('');
+
+        const facetSectionHtml = visibleFacets.length > 0
+            ? `
+                <div class="st-cleaner-mfilter-sec">
+                    <div class="st-cleaner-mfilter-title">细分标签与状态</div>
+                    <div class="st-cleaner-mfilter-wrap">
+                        <button type="button" class="st-cleaner-mfilter-pill ${state.activeFacet === 'all' ? 'is-active' : ''}" data-action="sheet-facet" data-facet="all">不限</button>
+                        ${visibleFacets.map(f => {
+                            const isAct = state.activeFacet === f.id;
+                            const toneCls = f.tone ? `is-tone-${f.tone}` : '';
+                            return `<button type="button" class="st-cleaner-mfilter-pill ${toneCls} ${isAct ? 'is-active' : ''}" data-action="sheet-facet" data-facet="${escapeHtml(f.id)}">${escapeHtml(f.label)} <em>${f.scopedCount}</em></button>`;
+                        }).join('')}
+                    </div>
+                </div>
+            `
+            : '';
+
+        const sortGridHtml = SORT_OPTIONS.map(opt => {
+            const isAct = state.sortBy === opt.value;
+            return `
+                <button type="button" class="st-cleaner-msort-opt ${isAct ? 'is-active' : ''}" data-action="sheet-sort" data-sort="${escapeHtml(opt.value)}">
+                    <span>${escapeHtml(opt.label)}</span>
+                    ${isAct ? '<i class="fa-solid fa-check"></i>' : ''}
+                </button>
+            `;
+        }).join('');
+
+        refs.sheet.innerHTML = `
+            <div class="st-cleaner-sheet-head">
+                <div>
+                    <div class="st-cleaner-sheet-title">筛选与排序</div>
+                    <div class="st-cleaner-sheet-sub">全部筛选项完整平铺 · 点击实时生效</div>
+                </div>
+                <button type="button" class="st-cleaner-icon-btn" data-action="close-sheet" aria-label="关闭筛选面板">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+            <div class="st-cleaner-sheet-body st-cleaner-scroll">
+                <div class="st-cleaner-mfilter-sec">
+                    <div class="st-cleaner-mfilter-title">数据子分类</div>
+                    <div class="st-cleaner-mfilter-wrap">
+                        ${subPillsHtml}
+                    </div>
+                </div>
+                ${facetSectionHtml}
+                <div class="st-cleaner-mfilter-sec">
+                    <div class="st-cleaner-mfilter-title">列表排序方式</div>
+                    <div class="st-cleaner-msort-grid">
+                        ${sortGridHtml}
+                    </div>
+                </div>
+            </div>
+            <div class="st-cleaner-sheet-foot">
+                <button type="button" class="st-cleaner-btn-secondary" data-action="reset-mobile-filter" ${isDefaultAll ? 'disabled' : ''}>重置默认</button>
+                <button type="button" class="st-cleaner-primary-btn st-cleaner-mfilter-apply" data-action="close-sheet">
+                    查看 ${state.matchedCount} 项结果
+                </button>
+            </div>
+        `;
+    }
+
+    function openFilterSortSheet() {
+        hidePopover();
+        state.sheetMode = 'filter';
+        renderFilterSortSheetContent();
+        refs.sheetMask.hidden = false;
+    }
+
+    // =========================================================================
     // Confirmation Dialog -> 3-Stage Smooth Progress -> Completion Report
     // =========================================================================
     function openConfirmationSheet() {
         hidePopover();
+        state.sheetMode = 'confirm';
         const preview = buildDeletionPreview(state.selectedKeys, scanner, {
             skipActive: state.skipActive,
         });
@@ -1502,6 +1705,7 @@ export function openCleanerModal(options = {}) {
         }
         if (target === refs.sheetMask && !state.isDeleting) {
             refs.sheetMask.hidden = true;
+            state.sheetMode = null;
             return;
         }
 
@@ -1512,6 +1716,65 @@ export function openCleanerModal(options = {}) {
         switch (action) {
             case 'close-modal':
                 if (!state.isDeleting) closeModal();
+                break;
+
+            case 'open-cat-sheet':
+                if (!state.isDeleting) openCategorySwitcherSheet();
+                break;
+
+            case 'pick-mobile-overview':
+                refs.sheetMask.hidden = true;
+                state.sheetMode = null;
+                if (state.activeTab !== 'overview') switchTab('overview');
+                break;
+
+            case 'pick-mobile-cat':
+                refs.sheetMask.hidden = true;
+                state.sheetMode = null;
+                if (actionEl.dataset.cat) {
+                    selectCategoryAndOpen(actionEl.dataset.cat, 'all', 'all');
+                }
+                break;
+
+            case 'open-filter-sheet':
+                if (!state.isDeleting && currentCategoryRecord) {
+                    openFilterSortSheet();
+                }
+                break;
+
+            case 'sheet-sub':
+                state.activeSubgroup = actionEl.dataset.sub || 'all';
+                refs.viewport.scrollTop = 0;
+                renderSubpills(currentCategoryRecord);
+                rebuildVirtualRows(currentCategoryRecord);
+                renderFilterSortSheetContent();
+                break;
+
+            case 'sheet-facet':
+                state.activeFacet = actionEl.dataset.facet || 'all';
+                refs.viewport.scrollTop = 0;
+                renderFacets(currentCategoryRecord);
+                rebuildVirtualRows(currentCategoryRecord);
+                renderFilterSortSheetContent();
+                break;
+
+            case 'sheet-sort':
+                state.sortBy = actionEl.dataset.sort || 'default';
+                if (refs.sortSelect) refs.sortSelect.value = state.sortBy;
+                refs.viewport.scrollTop = 0;
+                rebuildVirtualRows(currentCategoryRecord);
+                renderFilterSortSheetContent();
+                break;
+
+            case 'reset-mobile-filter':
+                state.activeSubgroup = 'all';
+                state.activeFacet = 'all';
+                state.sortBy = 'default';
+                if (refs.sortSelect) refs.sortSelect.value = 'default';
+                refs.viewport.scrollTop = 0;
+                renderSubpills(currentCategoryRecord);
+                rebuildVirtualRows(currentCategoryRecord);
+                renderFilterSortSheetContent();
                 break;
 
             case 'toggle-theme': {
@@ -1697,6 +1960,7 @@ export function openCleanerModal(options = {}) {
             case 'finish-report':
                 if (!state.isDeleting) {
                     refs.sheetMask.hidden = true;
+                    state.sheetMode = null;
                 }
                 break;
 

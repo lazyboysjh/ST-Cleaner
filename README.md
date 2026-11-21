@@ -65,15 +65,21 @@
 
 ![跨分类二次安全确认与高危预警抽屉](./docs/screenshots/04-confirm-and-report.png)
 
-### 6. 双入口唤起与全端多分辨率自适应
-通过 `1366×768`、`1600×900`、`1920×1080`、`2560×1440` 桌面四档及平板 `820×1180`、手机 / Android Termux `390×844` 全分辨率实机验收，无主操作或滚动条裁切：
+### 6. 双入口唤起与主流移动端原生抽屉交互
+通过 `1366×768`、`1600×900`、`1920×1080`、`2560×1440` 桌面四档及平板 `820×1180`、手机 / Android Termux `390×844` 全分辨率实机验收。移动端采用主流 App 原生交互架构（无任何横向裁切滚动条）：总览页直铺九宫格与体检中心；分类工作区配备 **`‹ 总览` + `分类名 ▾` 九大分类网格切换抽屉** 以及 **双排检索栏 + `筛选` 多行平铺底部抽屉**，所有子分类、标签与排序项 100% 完整展示、点按实时生效：
 
 ![酒馆左下角魔法棒快捷入口](./docs/screenshots/01-entry-points.png)
 
 <div align="center">
   <img src="./docs/screenshots/05-mobile-responsive.png" width="46%" alt="移动端数据总览与健康评分" />
   &nbsp;&nbsp;
-  <img src="./docs/screenshots/09-mobile-workspace.png" width="46%" alt="移动端二级细分与排序列表" />
+  <img src="./docs/screenshots/09-mobile-workspace.png" width="46%" alt="移动端分类工作区双排检索栏" />
+</div>
+<br />
+<div align="center">
+  <img src="./docs/screenshots/14-mobile-filter-sheet.png" width="46%" alt="移动端多行平铺筛选与排序底部抽屉" />
+  &nbsp;&nbsp;
+  <img src="./docs/screenshots/15-mobile-category-sheet.png" width="46%" alt="移动端九大分类一屏网格切换抽屉" />
 </div>
 
 ---
