@@ -22,15 +22,22 @@ export const STAGE1_CONCURRENCY = 5;
 export const STAGE2_CONCURRENCY = 3;
 
 /**
- * Validates that a single-token identifier (filename / name / id) contains no
- * path traversal sequences or directory separators.
+ * Validates that a single-segment identifier (filename / name / id) contains no
+ * directory separators, NUL bytes, or dot-only traversal segments (`.` / `..`).
+ * Legitimate filenames containing consecutive dots alongside real characters
+ * (e.g. ellipses like `如果不算出轨的话..尤娜.png` or `恋爱十年... ‖ 相川美月 [重制加强版].jsonl`)
+ * cannot traverse directories and are safely allowed.
  * @param {string} val
  * @returns {boolean}
  */
 export function isSafeSingleToken(val) {
     const s = String(val ?? '');
-    if (!s || s === '.' || s === '..') return false;
-    if (s.includes('..') || s.includes('/') || s.includes('\\') || s.includes('\0')) {
+    const trimmed = s.trim();
+    if (!trimmed) return false;
+    if (s.includes('/') || s.includes('\\') || s.includes('\0')) {
+        return false;
+    }
+    if (/^\.+$/.test(trimmed)) {
         return false;
     }
     return true;
@@ -38,15 +45,16 @@ export function isSafeSingleToken(val) {
 
 /**
  * Validates gallery relative image paths (`user/images/<folder>/<file>`).
+ * Every segment under `user/images/` must be a safe single-directory token.
  * @param {string} relPath
  * @returns {boolean}
  */
 export function isSafeGalleryPath(relPath) {
     const s = String(relPath ?? '');
     if (!s.startsWith('user/images/')) return false;
-    if (s.includes('..') || s.includes('\\') || s.includes('\0')) return false;
+    if (s.includes('\\') || s.includes('\0')) return false;
     const parts = s.split('/');
-    return parts.length >= 4 && parts.every(Boolean);
+    return parts.length >= 4 && parts.slice(2).every(seg => isSafeSingleToken(seg));
 }
 
 /**
@@ -57,7 +65,7 @@ export function isSafeGalleryPath(relPath) {
 export function isSafeUserFilesPath(relPath) {
     const s = String(relPath ?? '');
     if (!s.startsWith('user/files/')) return false;
-    if (s.includes('..') || s.includes('\\') || s.includes('\0')) return false;
+    if (s.includes('\\') || s.includes('\0')) return false;
     const parts = s.split('/');
     return parts.length === 3 && isSafeSingleToken(parts[2]);
 }
