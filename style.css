@@ -519,6 +519,12 @@
   color: var(--stc-obsidian-fg) !important;
 }
 
+.st-cleaner-root[data-theme="dark"] .st-cleaner-mcat-card.is-active {
+  background: #2b2e44 !important;
+  border-color: rgba(37, 184, 155, 0.45) !important;
+  color: #ffffff !important;
+}
+
 .st-cleaner-mcat-top {
   display: flex;
   align-items: center;
@@ -655,6 +661,13 @@
   color: var(--stc-obsidian-fg) !important;
 }
 
+.st-cleaner-root[data-theme="dark"] .st-cleaner-msort-opt.is-active,
+.st-cleaner-root[data-theme="dark"] .st-cleaner-mobile-filter-btn.is-active {
+  background: #2b2e44 !important;
+  border-color: rgba(37, 184, 155, 0.45) !important;
+  color: #ffffff !important;
+}
+
 .st-cleaner-mfilter-apply {
   flex: 1;
 }
@@ -669,6 +682,7 @@
 }
 
 .st-cleaner-header-titles {
+  flex: 1;
   min-width: 0;
 }
 
@@ -1868,6 +1882,13 @@
   max-width: 420px;
 }
 
+.st-cleaner-empty-reset {
+  margin-top: 6px;
+  height: 32px;
+  padding: 0 14px;
+  font-size: 12px !important;
+}
+
 /* ==========================================================================
    8. Unified Bottom Footer & High-Contrast Jet-Black Buttons
    ========================================================================== */
@@ -1906,6 +1927,11 @@
   color: var(--stc-text-secondary) !important;
   font-size: 12.5px !important;
   font-weight: 600 !important;
+}
+
+.st-cleaner-selected-summary:disabled {
+  opacity: 1;
+  cursor: default;
 }
 
 .st-cleaner-selected-summary.has-selection {
@@ -2262,7 +2288,9 @@
 .st-cleaner-popover {
   position: fixed;
   z-index: 10080;
-  max-width: min(400px, 90vw);
+  max-width: min(400px, calc(100vw - 24px));
+  max-height: min(65dvh, 360px);
+  overflow-y: auto;
   padding: 12px 14px;
   border-radius: 14px;
   background: #191825;
@@ -2274,6 +2302,10 @@
   word-break: break-word;
 }
 
+.st-cleaner-popover[hidden] {
+  display: none !important;
+}
+
 .st-cleaner-pop-title {
   font-weight: 700;
   margin-bottom: 4px;
@@ -2281,8 +2313,19 @@
 }
 
 .st-cleaner-pop-sub {
-  color: rgba(255, 255, 255, 0.75);
+  color: rgba(255, 255, 255, 0.78);
   font-size: 12px;
+}
+
+.st-cleaner-pop-crit {
+  margin-top: 6px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(244, 63, 94, 0.2);
+  border: 1px solid rgba(251, 113, 133, 0.35);
+  color: #fecdd3;
+  font-size: 11.5px;
+  font-weight: 600;
 }
 
 .st-cleaner-pop-meta {

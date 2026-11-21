@@ -45,7 +45,7 @@ const EXTRA_HANZI_MAP = {
   蔷: 'qiang', 薰: 'xun', 瞳: 'tong', 眸: 'mou', 烬: 'jin', 焰: 'yan', 炽: 'chi',
   冽: 'lie', 凛: 'lin', 霜: 'shuang', 霏: 'fei', 霓: 'ni', 裳: 'shang', 绮: 'qi',
   绫: 'ling', 罗: 'luo', 绸: 'chou', 缎: 'duan', 弑: 'shi', 戮: 'lu', 殇: 'shang',
-  诀: 'jue', 咒: 'zhou', 箓: 'lu', 傀: 'kui', 儡: 'lei', 妖: 'yao', 姬: 'ji',
+  咒: 'zhou', 箓: 'lu', 傀: 'kui', 儡: 'lei', 妖: 'yao', 姬: 'ji',
   妃: 'fei', 嫔: 'pin', 朕: 'zhen', 陛: 'bi', 臣: 'chen', 妾: 'qie', 婢: 'bi',
   澹: 'tan', 魈: 'xiao', 绯: 'fei', 澪: 'ling', 筱: 'xiao', 玥: 'yue', 璎: 'ying',
   珩: 'heng', 琛: 'chen', 璟: 'jing', 璀: 'cui', 璨: 'can', 昱: 'yu', 暄: 'xuan',
@@ -169,16 +169,20 @@ export function ensureItemSearchIndex(item) {
   const title = String(item.title || '');
   const groupTitle = String(item.groupTitle || '');
   const subtitle = String(item.subtitle || '');
+  const badgeText = Array.isArray(item.badges)
+    ? item.badges.map((b) => b?.text || '').filter(Boolean).join(' ')
+    : '';
 
-  const raw = `${title} ${groupTitle} ${subtitle}`.toLowerCase();
+  const raw = `${title} ${groupTitle} ${subtitle} ${badgeText}`.toLowerCase();
   const tPy = toPinyinTokens(title);
   const gPy = toPinyinTokens(groupTitle);
   const sPy = toPinyinTokens(subtitle);
+  const bPy = toPinyinTokens(badgeText);
 
   item._search = {
     raw,
-    full: `${tPy.full} ${gPy.full} ${sPy.full}`,
-    initials: `${tPy.initials} ${gPy.initials} ${sPy.initials}`,
+    full: `${tPy.full} ${gPy.full} ${sPy.full} ${bPy.full}`,
+    initials: `${tPy.initials} ${gPy.initials} ${sPy.initials} ${bPy.initials}`,
   };
 
   return item._search;

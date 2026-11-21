@@ -1156,12 +1156,10 @@ export function createScannerSession(options = {}) {
             const chatSizeBytes = Number(ch.chat_size) || Number(ch.data_size) || 0;
 
             const subtitleParts = [ch.avatar];
-            if (isFav) subtitleParts.push('★ 星标收藏');
             if (dateLabel) subtitleParts.push(`互动:${dateLabel}`);
-            if (inGroups.length > 0) subtitleParts.push(`关联 ${inGroups.length} 个群聊`);
             if (worldName) subtitleParts.push(`世界书:${worldName}`);
             if (scopedRegexCount > 0) subtitleParts.push(`局部正则:${scopedRegexCount}`);
-            if (tagLabels.length > 0) subtitleParts.push(`标签:${tagLabels.slice(0, 4).join('/')}`);
+            if (tagLabels.length > 2) subtitleParts.push(`更多标签:${tagLabels.slice(2, 5).join('/')}`);
 
             const isActive = ch.avatar === activeCharAvatar;
             const facets = [isBuiltin ? 'src:builtin' : 'src:user'];
@@ -1339,8 +1337,6 @@ export function createScannerSession(options = {}) {
                         const msgCount = info?.chat_items ?? info?.mes_count ?? '';
                         const numericMsgs = msgCount !== '' ? Number(msgCount) : NaN;
                         const isShortTest = !isCharDefault && Number.isFinite(numericMsgs) && numericMsgs <= 2;
-                        const lastMes = info?.last_mes ? ` · 最近: ${String(info.last_mes).slice(0, 24)}` : '';
-                        const sizeText = info?.file_size ? ` · ${info.file_size}` : '';
 
                         const chatFacets = [isCharDefault ? 'chat:current_default' : 'chat:branch'];
                         if (isShortTest) chatFacets.push('chat:short_test');
@@ -1349,12 +1345,18 @@ export function createScannerSession(options = {}) {
                         const parsedBytes = parseSizeStringBytes(info?.file_size);
                         const sortTimeMs = parseTavernTimestamp(info?.last_mes, fileName);
 
+                        const chatMetaParts = [
+                            msgCount !== '' ? `${msgCount} 条消息` : '单聊会话',
+                            info?.file_size ? String(info.file_size) : '',
+                            info?.last_mes ? `最近: ${String(info.last_mes).slice(0, 24)}` : '',
+                        ].filter(Boolean);
+
                         charChatItems.push(registerItem({
                             key: `char_chat:${ch.avatar}::${fileName}`,
                             categoryId: 'chats',
                             subgroupId: 'char_chats',
                             title: `${ch.name || stripExt(ch.avatar, '.png')} — ${baseName}`,
-                            subtitle: `角色: ${ch.name || ch.avatar}${msgCount !== '' ? ` · ${msgCount} 条消息` : ''}${sizeText}${lastMes}`,
+                            subtitle: chatMetaParts.join(' · '),
                             sizeBytes: parsedBytes,
                             sortTimeMs,
                             sortMetric: Number.isFinite(numericMsgs) ? numericMsgs * 1024 + parsedBytes : parsedBytes,
@@ -1365,7 +1367,6 @@ export function createScannerSession(options = {}) {
                                     ? [{ text: '正在使用', type: 'active' }]
                                     : (isCharDefault ? [{ text: '角色主会话', type: 'info' }] : [{ text: '历史分支', type: 'muted' }])),
                                 ...(isShortTest ? [{ text: '短测试档', type: 'warn' }] : []),
-                                { text: ch.name || stripExt(ch.avatar, '.png'), type: 'muted' },
                             ],
                             payload: {
                                 kind: 'char_chat',
@@ -1395,21 +1396,22 @@ export function createScannerSession(options = {}) {
                 if (!cid) continue;
                 const isGroupDefault = String(g.chat_id) === cid;
                 const isActive = isGroupSelected && isGroupDefault;
+                const gChatTimeMs = parseTavernTimestamp(cid);
+                const gChatDate = formatShortDate(gChatTimeMs);
                 groupChatItems.push(registerItem({
                     key: `group_chat:${g.id}::${cid}`,
                     categoryId: 'chats',
                     subgroupId: 'group_chats',
                     title: `${g.name || g.id} — ${cid}`,
-                    subtitle: `所属群聊: ${g.name || g.id} · 会话 ID: ${cid}`,
+                    subtitle: `${gChatDate ? `记录: ${gChatDate} · ` : ''}仅清理此会话（保留群聊房间）`,
                     sizeBytes: 0,
-                    sortTimeMs: parseTavernTimestamp(cid),
+                    sortTimeMs: gChatTimeMs,
                     isActive,
                     facets: [isGroupDefault ? 'chat:current_default' : 'chat:branch'],
                     badges: [
                         ...(isActive
                             ? [{ text: '正在使用', type: 'active' }]
                             : (isGroupDefault ? [{ text: '群聊主会话', type: 'info' }] : [{ text: '历史分支', type: 'muted' }])),
-                        { text: g.name || String(g.id), type: 'muted' },
                     ],
                     payload: {
                         kind: 'group_chat',
@@ -1612,8 +1614,8 @@ export function createScannerSession(options = {}) {
                 key: `th:global::${sc.id}`,
                 categoryId: 'regex',
                 subgroupId: 'th_global',
-                title: sc.folderName ? `[${sc.folderName}] ${sc.name}` : sc.name,
-                subtitle: `酒馆助手全局脚本 · ${isEnabled ? '启用中' : '已停用'}${sc.info ? ` · ${sc.info.slice(0, 36)}` : ''}`,
+                title: sc.name,
+                subtitle: `酒馆助手全局脚本${sc.folderName ? ` · 文件夹:${sc.folderName}` : ''} · ${isEnabled ? '启用中' : '已停用'}${sc.info ? ` · ${sc.info.slice(0, 36)}` : ''}`,
                 sizeBytes: 0,
                 isActive,
                 facets: [
@@ -2133,8 +2135,8 @@ export function createScannerSession(options = {}) {
                 key: `persona:${avatarFile}`,
                 categoryId: 'personas',
                 subgroupId: 'user_personas',
-                title: `${alias} (${avatarFile})`,
-                subtitle: `人设头像: ${avatarFile}${isDefault ? ' · 默认人设' : ''}${isBuiltin ? ' · ⚠️ 官方人设底座' : ''}${lorebook}`,
+                title: alias && alias !== avatarFile ? alias : avatarFile,
+                subtitle: `头像文件: ${avatarFile}${lorebook}${isBuiltin ? ' · 官方初始人设底座' : ''}`,
                 sizeBytes: 0,
                 isActive,
                 isCritical,
