@@ -7,7 +7,14 @@
  * Stage 3: Unified in-memory reference cleanup, guarded event emission & immediate saveSettings flush
  */
 
-import { SELF_EXTENSION_ID, resolveSelfFolderName, stripExt, loadHostModules } from './scanner.js';
+import {
+    SELF_EXTENSION_ID,
+    BUILTIN_COMFY_WORKFLOWS,
+    resolveSelfFolderName,
+    stripExt,
+    loadHostModules,
+    pruneTavernHelperTree,
+} from './scanner.js';
 
 export const STAGE1_CONCURRENCY = 5;
 export const STAGE2_CONCURRENCY = 3;
@@ -94,10 +101,10 @@ export function buildDeletionPreview(selectedKeys, scanner, opts = {}) {
         if (item.payload?.kind === 'preset' && item.badges?.some(b => b.text === '默认可恢复')) {
             restorablePresets.push(item);
         }
-        if (item.payload?.kind === 'regex_scoped' || item.payload?.kind === 'wi_embedded') {
+        if (item.payload?.kind === 'regex_scoped' || item.payload?.kind === 'th_char' || item.payload?.kind === 'wi_embedded') {
             affectedCharWritebacks.add(item.payload.avatar);
         }
-        if (item.payload?.kind === 'regex_preset') {
+        if (item.payload?.kind === 'regex_preset' || item.payload?.kind === 'th_preset') {
             affectedPresetWritebacks.add(`${item.payload.apiId}::${item.payload.presetName}`);
         }
         if (item.payload?.kind === 'group_chat') {
@@ -234,6 +241,9 @@ export async function executeBatchDelete(params) {
             case 'char_card':
                 if (!isSafeSingleToken(p.avatar)) unsafeReason = '角色头像文件名包含非法路径字符';
                 break;
+            case 'char_sprites':
+                if (!isSafeSingleToken(p.avatar) || !isSafeSingleToken(p.spriteDirName)) unsafeReason = '角色立绘目录名非法';
+                break;
             case 'group':
                 if (!isSafeSingleToken(p.id)) unsafeReason = '群组 ID 非法';
                 break;
@@ -266,6 +276,22 @@ export async function executeBatchDelete(params) {
                 break;
             case 'gallery_image':
                 if (!isSafeGalleryPath(p.path)) unsafeReason = '画廊图片路径越界';
+                break;
+            case 'user_asset':
+                if (!['bgm', 'ambient', 'blip'].includes(p.category) || !isSafeSingleToken(p.filename)) {
+                    unsafeReason = '音效资产分类或文件名非法';
+                } else if (!/^[a-zA-Z0-9_\-.]+$/.test(String(p.filename))) {
+                    unsafeReason = '酒馆官方 /api/assets/delete 仅允许英文字母、数字、下划线或连字符文件名，含中文文件请在 assets 目录手动移除';
+                }
+                break;
+            case 'comfy_workflow':
+                if (
+                    !isSafeSingleToken(p.fileName)
+                    || !String(p.fileName).toLowerCase().endsWith('.json')
+                    || BUILTIN_COMFY_WORKFLOWS.has(p.fileName)
+                ) {
+                    unsafeReason = '禁止删除内置默认工作流或非法文件名';
+                }
                 break;
             case 'third_party_ext':
                 if (!isSafeSingleToken(p.extensionName) || forbiddenExtNames.has(String(p.extensionName).toLowerCase())) {
@@ -327,10 +353,20 @@ export async function executeBatchDelete(params) {
             case 'quick_reply':
             case 'databank':
             case 'gallery_image':
+            case 'user_asset':
+            case 'comfy_workflow':
             case 'third_party_ext':
             case 'vector_collection':
             case 'chat_backup':
                 stage1Tasks.push(item);
+                break;
+
+            case 'char_sprites':
+                if (plannedCharDeletes.has(p.avatar)) {
+                    succeeded.push({ key: item.key, title: item.title, categoryId: item.categoryId });
+                } else {
+                    stage1Tasks.push(item);
+                }
                 break;
 
             case 'char_chat':
@@ -357,11 +393,25 @@ export async function executeBatchDelete(params) {
                 } else {
                     let op = stage2CharOps.get(p.avatar);
                     if (!op) {
-                        op = { avatar: p.avatar, items: [], removeRegexIds: new Set(), clearBook: false };
+                        op = { avatar: p.avatar, items: [], removeRegexIds: new Set(), removeThIds: new Set(), clearBook: false };
                         stage2CharOps.set(p.avatar, op);
                     }
                     op.items.push(item);
                     op.removeRegexIds.add(String(p.scriptId));
+                }
+                break;
+
+            case 'th_char':
+                if (plannedCharDeletes.has(p.avatar)) {
+                    succeeded.push({ key: item.key, title: item.title, categoryId: item.categoryId });
+                } else {
+                    let op = stage2CharOps.get(p.avatar);
+                    if (!op) {
+                        op = { avatar: p.avatar, items: [], removeRegexIds: new Set(), removeThIds: new Set(), clearBook: false };
+                        stage2CharOps.set(p.avatar, op);
+                    }
+                    op.items.push(item);
+                    op.removeThIds.add(String(p.scriptId));
                 }
                 break;
 
@@ -371,7 +421,7 @@ export async function executeBatchDelete(params) {
                 } else {
                     let op = stage2CharOps.get(p.avatar);
                     if (!op) {
-                        op = { avatar: p.avatar, items: [], removeRegexIds: new Set(), clearBook: false };
+                        op = { avatar: p.avatar, items: [], removeRegexIds: new Set(), removeThIds: new Set(), clearBook: false };
                         stage2CharOps.set(p.avatar, op);
                     }
                     op.items.push(item);
@@ -392,6 +442,7 @@ export async function executeBatchDelete(params) {
                             presetData: p.presetData,
                             items: [],
                             removeRegexIds: new Set(),
+                            removeThIds: new Set(),
                         };
                         stage2PresetOps.set(pKey, op);
                     }
@@ -401,8 +452,33 @@ export async function executeBatchDelete(params) {
                 break;
             }
 
+            case 'th_preset': {
+                const pKey = `${p.apiId}::${p.presetName}`;
+                if (plannedPresetDeletes.has(pKey)) {
+                    succeeded.push({ key: item.key, title: item.title, categoryId: item.categoryId });
+                } else {
+                    let op = stage2PresetOps.get(pKey);
+                    if (!op) {
+                        op = {
+                            apiId: p.apiId,
+                            presetName: p.presetName,
+                            presetData: p.presetData,
+                            items: [],
+                            removeRegexIds: new Set(),
+                            removeThIds: new Set(),
+                        };
+                        stage2PresetOps.set(pKey, op);
+                    }
+                    op.items.push(item);
+                    op.removeThIds.add(String(p.scriptId));
+                }
+                break;
+            }
+
             case 'regex_global':
             case 'regex_combo':
+            case 'th_global':
+            case 'global_var':
             case 'conn_profile':
             case 'tag':
                 stage3DirectItems.push(item);
@@ -446,6 +522,7 @@ export async function executeBatchDelete(params) {
     const deletedQuickReplies = [];
     const deletedDatabankItems = [];
     const deletedExtensions = [];
+    const deletedComfyWorkflows = [];
     const deletedRegexIdsAllScopes = new Set();
     const deletedPhysicalFiles = new Set();
 
@@ -608,6 +685,38 @@ export async function executeBatchDelete(params) {
                         });
                         break;
 
+                    case 'char_sprites': {
+                        const spArr = Array.isArray(p.sprites) ? p.sprites : [];
+                        let lastRes = { ok: true, status: 200 };
+                        for (const sp of spArr) {
+                            if (!sp?.label || !sp?.spriteName) continue;
+                            lastRes = await sendRequest('api/sprites/delete', {
+                                method: 'POST',
+                                body: {
+                                    name: p.spriteDirName,
+                                    label: sp.label,
+                                    spriteName: sp.spriteName,
+                                },
+                            });
+                        }
+                        res = lastRes;
+                        break;
+                    }
+
+                    case 'user_asset':
+                        res = await sendRequest('api/assets/delete', {
+                            method: 'POST',
+                            body: { category: p.category, filename: p.filename },
+                        });
+                        break;
+
+                    case 'comfy_workflow':
+                        res = await sendRequest('api/sd/comfy/delete-workflow', {
+                            method: 'POST',
+                            body: { file_name: p.fileName },
+                        });
+                        break;
+
                     case 'third_party_ext':
                         res = await sendRequest('api/extensions/delete', {
                             method: 'POST',
@@ -702,6 +811,9 @@ export async function executeBatchDelete(params) {
                         case 'third_party_ext':
                             deletedExtensions.push(p);
                             break;
+                        case 'comfy_workflow':
+                            deletedComfyWorkflows.push(p);
+                            break;
                         default:
                             break;
                     }
@@ -781,7 +893,7 @@ export async function executeBatchDelete(params) {
             if (boundPrimary && deletedWorldNames.has(boundPrimary)) {
                 let op = stage2CharOps.get(ch.avatar);
                 if (!op) {
-                    op = { avatar: ch.avatar, items: [], removeRegexIds: new Set(), clearBook: false, unbindWorld: true };
+                    op = { avatar: ch.avatar, items: [], removeRegexIds: new Set(), removeThIds: new Set(), clearBook: false, unbindWorld: true };
                     stage2CharOps.set(ch.avatar, op);
                 } else {
                     op.unbindWorld = true;
@@ -803,7 +915,7 @@ export async function executeBatchDelete(params) {
 
                 try {
                     const patch = { avatar: op.avatar, data: {} };
-                    if (op.removeRegexIds.size > 0 || op.unbindWorld) {
+                    if (op.removeRegexIds.size > 0 || op.removeThIds.size > 0 || op.unbindWorld) {
                         patch.data.extensions = {};
                     }
                     if (op.removeRegexIds.size > 0) {
@@ -815,6 +927,18 @@ export async function executeBatchDelete(params) {
                             return !op.removeRegexIds.has(sid);
                         });
                         patch.data.extensions.regex_scripts = nextScripts;
+                    }
+                    if (op.removeThIds.size > 0) {
+                        const existingExt = ch?.data?.extensions || {};
+                        if (existingExt.tavern_helper && Array.isArray(existingExt.tavern_helper.scripts)) {
+                            patch.data.extensions.tavern_helper = {
+                                ...existingExt.tavern_helper,
+                                scripts: pruneTavernHelperTree(existingExt.tavern_helper.scripts, op.removeThIds),
+                            };
+                        }
+                        if (Array.isArray(existingExt.TavernHelper_scripts)) {
+                            patch.data.extensions.TavernHelper_scripts = pruneTavernHelperTree(existingExt.TavernHelper_scripts, op.removeThIds);
+                        }
                     }
                     if (op.unbindWorld) {
                         patch.data.extensions.world = '';
@@ -836,6 +960,14 @@ export async function executeBatchDelete(params) {
                             if (op.removeRegexIds.size > 0) {
                                 ch.data.extensions.regex_scripts = patch.data.extensions.regex_scripts;
                                 for (const id of op.removeRegexIds) deletedRegexIdsAllScopes.add(id);
+                            }
+                            if (op.removeThIds.size > 0) {
+                                if (patch.data.extensions.tavern_helper) {
+                                    ch.data.extensions.tavern_helper = patch.data.extensions.tavern_helper;
+                                }
+                                if (patch.data.extensions.TavernHelper_scripts) {
+                                    ch.data.extensions.TavernHelper_scripts = patch.data.extensions.TavernHelper_scripts;
+                                }
                             }
                             if (op.unbindWorld) {
                                 ch.data.extensions.world = '';
@@ -883,13 +1015,21 @@ export async function executeBatchDelete(params) {
                 try {
                     const cloned = JSON.parse(JSON.stringify(op.presetData || {}));
                     cloned.extensions = cloned.extensions || {};
-                    const currentScripts = Array.isArray(cloned.extensions.regex_scripts)
-                        ? cloned.extensions.regex_scripts
-                        : [];
-                    cloned.extensions.regex_scripts = currentScripts.filter((s, idx) => {
-                        const sid = String(s?.id ?? `idx_${idx}`);
-                        return !op.removeRegexIds.has(sid);
-                    });
+                    if (op.removeRegexIds.size > 0) {
+                        const currentScripts = Array.isArray(cloned.extensions.regex_scripts)
+                            ? cloned.extensions.regex_scripts
+                            : [];
+                        cloned.extensions.regex_scripts = currentScripts.filter((s, idx) => {
+                            const sid = String(s?.id ?? `idx_${idx}`);
+                            return !op.removeRegexIds.has(sid);
+                        });
+                    }
+                    if (op.removeThIds.size > 0 && cloned.extensions.tavern_helper && Array.isArray(cloned.extensions.tavern_helper.scripts)) {
+                        cloned.extensions.tavern_helper.scripts = pruneTavernHelperTree(
+                            cloned.extensions.tavern_helper.scripts,
+                            op.removeThIds,
+                        );
+                    }
 
                     const res = await sendRequest('api/presets/save', {
                         method: 'POST',
@@ -901,8 +1041,11 @@ export async function executeBatchDelete(params) {
                     });
 
                     if (res.ok) {
-                        if (op.presetData?.extensions && Array.isArray(op.presetData.extensions.regex_scripts)) {
+                        if (op.removeRegexIds.size > 0 && op.presetData?.extensions && Array.isArray(op.presetData.extensions.regex_scripts)) {
                             op.presetData.extensions.regex_scripts = cloned.extensions.regex_scripts;
+                        }
+                        if (op.removeThIds.size > 0 && op.presetData?.extensions?.tavern_helper) {
+                            op.presetData.extensions.tavern_helper.scripts = cloned.extensions.tavern_helper.scripts;
                         }
                         for (const id of op.removeRegexIds) deletedRegexIdsAllScopes.add(id);
                         for (const subItem of op.items) {
@@ -1012,6 +1155,30 @@ export async function executeBatchDelete(params) {
                 succeeded.push({ key: item.key, title: item.title, categoryId: item.categoryId });
                 break;
             }
+            case 'th_global': {
+                const removeSet = new Set([String(p.scriptId)]);
+                if (extSettings?.tavern_helper?.script && Array.isArray(extSettings.tavern_helper.script.scripts)) {
+                    extSettings.tavern_helper.script.scripts = pruneTavernHelperTree(
+                        extSettings.tavern_helper.script.scripts,
+                        removeSet,
+                    );
+                }
+                if (extSettings?.TavernHelper?.script && Array.isArray(extSettings.TavernHelper.script.scriptsRepository)) {
+                    extSettings.TavernHelper.script.scriptsRepository = pruneTavernHelperTree(
+                        extSettings.TavernHelper.script.scriptsRepository,
+                        removeSet,
+                    );
+                }
+                succeeded.push({ key: item.key, title: item.title, categoryId: item.categoryId });
+                break;
+            }
+            case 'global_var': {
+                if (extSettings?.variables?.global && typeof extSettings.variables.global === 'object') {
+                    delete extSettings.variables.global[p.varKey];
+                }
+                succeeded.push({ key: item.key, title: item.title, categoryId: item.categoryId });
+                break;
+            }
             case 'conn_profile': {
                 const cm = extSettings.connectionManager;
                 if (cm && Array.isArray(cm.profiles)) {
@@ -1086,6 +1253,22 @@ export async function executeBatchDelete(params) {
         }
         if (Array.isArray(worldInfo.charLore)) {
             worldInfo.charLore = worldInfo.charLore.filter(entry => entry?.name !== charName && entry?.name !== stripExt(avatar, '.png'));
+        }
+        // Clean TavernHelper (酒馆助手) character script allowlists
+        if (extSettings?.tavern_helper?.script?.enabled && Array.isArray(extSettings.tavern_helper.script.enabled.characters)) {
+            extSettings.tavern_helper.script.enabled.characters = extSettings.tavern_helper.script.enabled.characters.filter(
+                c => c !== avatar && c !== charName,
+            );
+        }
+        if (extSettings?.tavern_helper?.script?.popuped && Array.isArray(extSettings.tavern_helper.script.popuped.characters)) {
+            extSettings.tavern_helper.script.popuped.characters = extSettings.tavern_helper.script.popuped.characters.filter(
+                c => c !== avatar && c !== charName,
+            );
+        }
+        if (extSettings?.TavernHelper?.script && Array.isArray(extSettings.TavernHelper.script.characters_with_scripts)) {
+            extSettings.TavernHelper.script.characters_with_scripts = extSettings.TavernHelper.script.characters_with_scripts.filter(
+                c => c !== avatar && c !== charName,
+            );
         }
 
         // Clean accountStorage / localStorage alert flags
@@ -1172,7 +1355,23 @@ export async function executeBatchDelete(params) {
                 powerUser[pr.apiId].preset = pr.fallbackPresetName || '';
             }
         }
+        if (extSettings?.tavern_helper?.script?.enabled && Array.isArray(extSettings.tavern_helper.script.enabled.presets)) {
+            extSettings.tavern_helper.script.enabled.presets = extSettings.tavern_helper.script.enabled.presets.filter(
+                n => n !== pr.name,
+            );
+        }
+        if (extSettings?.tavern_helper?.script?.popuped && Array.isArray(extSettings.tavern_helper.script.popuped.presets)) {
+            extSettings.tavern_helper.script.popuped.presets = extSettings.tavern_helper.script.popuped.presets.filter(
+                n => n !== pr.name,
+            );
+        }
         await safeEmit(ctx, 'PRESET_DELETED', { apiId: pr.apiId, name: pr.name });
+    }
+
+    for (const wf of deletedComfyWorkflows) {
+        if (extSettings?.sd && extSettings.sd.comfy_workflow === wf.fileName) {
+            extSettings.sd.comfy_workflow = 'Default_Comfy_Workflow.json';
+        }
     }
 
     // Unbind deleted user personas, backgrounds & themes

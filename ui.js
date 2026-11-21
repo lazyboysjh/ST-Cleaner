@@ -1,7 +1,8 @@
 /**
  * @file ui.js
- * Scheme C Upgraded UI: Zero-Scroll-Wall Bento Overview + Fixed-Height Windowed Virtual List.
- * Supports 320px -> 2560px viewports, Pinyin fuzzy search, 500-char popover & 3-stage progress sheet.
+ * Editorial Pastel SaaS Dashboard UI + Fixed-Height Windowed Virtual List.
+ * Pure crisp #FFFFFF canvas, obsidian active sidebar pill, Morandi pastel metric cards,
+ * sleek Statistics progress bars, and rounded-square Teal-Mint checkboxes.
  */
 
 import {
@@ -25,7 +26,7 @@ import {
     executeBatchDelete,
 } from './deleter.js';
 
-const GROUP_ROW_HEIGHT = 38;
+const GROUP_ROW_HEIGHT = 40;
 const ITEM_ROW_HEIGHT = 56;
 const GROUP_BOTTOM_GAP = 8;
 const OVERSCAN_PX = 280;
@@ -47,24 +48,17 @@ export function escapeHtml(str) {
 }
 
 /**
- * Auto-detects whether SillyTavern's current theme background is light or dark.
+ * Reads persisted appearance ('light' | 'dark'), defaulting to crisp Editorial Light Mode.
  * @returns {'dark' | 'light'}
  */
-function detectHostTheme() {
+function resolveInitialTheme() {
     try {
-        const bg = getComputedStyle(document.body).backgroundColor || '';
-        const m = bg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
-        if (m) {
-            const r = Number(m[1]);
-            const g = Number(m[2]);
-            const b = Number(m[3]);
-            const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-            if (luminance > 0.62) return 'light';
-        }
+        const saved = localStorage.getItem('st_delEverything_theme_v1');
+        if (saved === 'dark' || saved === 'light') return saved;
     } catch {
-        // Default to dark
+        // Ignore storage errors
     }
-    return 'dark';
+    return 'light';
 }
 
 /**
@@ -111,7 +105,7 @@ export function openCleanerModal(options = {}) {
     });
 
     const state = {
-        theme: detectHostTheme(),
+        theme: resolveInitialTheme(),
         activeTab: options.initialTab === 'workspace' ? 'workspace' : 'overview',
         bootDetailExpanded: false,
         activeCategory: options.initialCategory || 'characters',
@@ -132,6 +126,8 @@ export function openCleanerModal(options = {}) {
         searchDebounceTimer: null,
     };
 
+    const catDefMap = new Map(CATEGORY_DEFS.map(c => [c.id, c]));
+
     // Build root DOM once; virtual list mutates only its ~35-row window
     const root = document.createElement('div');
     root.className = 'st-cleaner-root';
@@ -142,91 +138,108 @@ export function openCleanerModal(options = {}) {
 
     root.innerHTML = `
         <div class="st-cleaner-modal">
-            <header class="st-cleaner-topbar">
-                <div class="st-cleaner-brand">
-                    <span class="st-cleaner-brand-icon"><i class="fa-solid fa-broom"></i></span>
-                    <span class="st-cleaner-brand-text">数据清理与诊断</span>
-                </div>
-                <div class="st-cleaner-segmented" role="tablist">
-                    <button type="button" class="st-cleaner-seg-btn" data-tab="overview" role="tab">
-                        <i class="fa-solid fa-gauge-high"></i><span>总览与诊断</span>
-                    </button>
-                    <button type="button" class="st-cleaner-seg-btn" data-tab="workspace" role="tab">
-                        <i class="fa-solid fa-layer-group"></i><span>分类清理</span>
-                    </button>
-                </div>
-                <div class="st-cleaner-top-actions">
-                    <button type="button" class="st-cleaner-icon-btn" data-action="toggle-theme" title="切换深浅色外观" aria-label="切换深浅色外观">
-                        <i class="fa-solid fa-circle-half-stroke"></i>
-                    </button>
-                    <button type="button" class="st-cleaner-icon-btn" data-action="close-modal" title="关闭 (Esc)" aria-label="关闭窗口">
-                        <i class="fa-solid fa-xmark"></i>
-                    </button>
-                </div>
-            </header>
+            <div class="st-cleaner-shell">
+                <aside class="st-cleaner-sidebar" aria-label="主导航">
+                    <div class="st-cleaner-brand">
+                        <span class="st-cleaner-brand-logo"><i class="fa-solid fa-broom"></i></span>
+                        <div class="st-cleaner-brand-meta">
+                            <span class="st-cleaner-brand-name">delEverything</span>
+                            <span class="st-cleaner-brand-tag">数据清理中心</span>
+                        </div>
+                    </div>
+                    <nav class="st-cleaner-nav-scroll st-cleaner-scroll" data-ref="sidebar"></nav>
+                    <div class="st-cleaner-sidebar-promo">
+                        <div class="st-cleaner-promo-dot"></div>
+                        <div class="st-cleaner-promo-title">安全保护引擎已就绪</div>
+                        <div class="st-cleaner-promo-desc">覆盖酒馆助手脚本、立绘、世界书等 30 类资产，自动跳过活跃项</div>
+                    </div>
+                </aside>
 
-            <section class="st-cleaner-overview st-cleaner-scroll" data-view="overview">
-                <div class="st-cleaner-boot-card" data-ref="boot-card"></div>
-                <div class="st-cleaner-bento-grid" data-ref="bento-grid"></div>
-            </section>
-
-            <section class="st-cleaner-workspace" data-view="workspace" hidden>
-                <aside class="st-cleaner-sidebar st-cleaner-scroll" data-ref="sidebar"></aside>
-                <div class="st-cleaner-main">
+                <div class="st-cleaner-canvas">
                     <div class="st-cleaner-mobile-cats" data-ref="mobile-cats"></div>
-                    <div class="st-cleaner-toolbar">
-                        <div class="st-cleaner-search-row">
-                            <div class="st-cleaner-search-box">
-                                <i class="fa-solid fa-magnifying-glass st-cleaner-search-icon"></i>
-                                <input
-                                    type="search"
-                                    class="st-cleaner-search-input"
-                                    data-ref="search-input"
-                                    placeholder="搜索名称 / 全拼 / 首字母 (如 kl、kelai)..."
-                                    autocomplete="off"
-                                    spellcheck="false"
-                                />
-                                <button type="button" class="st-cleaner-search-clear" data-action="clear-search" hidden aria-label="清空搜索">
-                                    <i class="fa-solid fa-circle-xmark"></i>
-                                </button>
-                            </div>
-                            <button type="button" class="st-cleaner-mini-btn" data-action="rescan-category" title="重新扫描当前分类">
-                                <i class="fa-solid fa-rotate"></i> 刷新
+
+                    <header class="st-cleaner-header">
+                        <div class="st-cleaner-header-titles">
+                            <h2 class="st-cleaner-page-title" data-ref="page-title">数据总览</h2>
+                            <p class="st-cleaner-page-sub" data-ref="page-sub">查看启动耗时分布与全部 9 大类可清理资产</p>
+                        </div>
+                        <div class="st-cleaner-top-actions">
+                            <button type="button" class="st-cleaner-icon-btn" data-action="header-refresh" title="刷新扫描数据" aria-label="刷新数据">
+                                <i class="fa-solid fa-rotate-right"></i>
+                            </button>
+                            <button type="button" class="st-cleaner-icon-btn" data-action="toggle-theme" data-ref="theme-btn" title="切换浅色 / 深色外观" aria-label="切换浅色或深色外观">
+                                <i class="fa-solid ${state.theme === 'dark' ? 'fa-sun' : 'fa-moon'}"></i>
+                            </button>
+                            <button type="button" class="st-cleaner-icon-btn st-cleaner-close-btn" data-action="close-modal" title="关闭 (Esc)" aria-label="关闭窗口">
+                                <i class="fa-solid fa-xmark"></i>
                             </button>
                         </div>
-                        <div class="st-cleaner-subbar">
-                            <div class="st-cleaner-subpills" data-ref="subpills"></div>
-                            <div class="st-cleaner-bulk-btns">
-                                <button type="button" class="st-cleaner-mini-btn" data-action="select-visible">全选结果</button>
-                                <button type="button" class="st-cleaner-mini-btn" data-action="deselect-visible">取消本页</button>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="st-cleaner-scan-banner" data-ref="scan-banner" hidden></div>
-                    <div class="st-cleaner-vlist-viewport st-cleaner-scroll" data-ref="vlist-viewport">
-                        <div class="st-cleaner-vlist-spacer" data-ref="vlist-spacer">
-                            <div class="st-cleaner-vlist-window" data-ref="vlist-window"></div>
-                        </div>
-                        <div class="st-cleaner-empty" data-ref="vlist-empty" hidden></div>
-                    </div>
-                </div>
-            </section>
+                    </header>
 
-            <footer class="st-cleaner-footer">
-                <div class="st-cleaner-footer-left">
-                    <button type="button" class="st-cleaner-selected-summary" data-action="open-confirm">
-                        <span data-ref="selected-count-text">已选 0 项</span>
-                    </button>
-                    <label class="st-cleaner-skip-toggle">
-                        <input type="checkbox" data-ref="skip-active-checkbox" checked />
-                        <span>跳过“正在使用”项</span>
-                    </label>
+                    <section class="st-cleaner-overview st-cleaner-scroll" data-view="overview">
+                        <div class="st-cleaner-bento-grid" data-ref="bento-grid"></div>
+                        <div class="st-cleaner-stats-panel" data-ref="boot-card"></div>
+                    </section>
+
+                    <section class="st-cleaner-workspace" data-view="workspace" hidden>
+                        <div class="st-cleaner-toolbar">
+                            <div class="st-cleaner-search-row">
+                                <div class="st-cleaner-search-box">
+                                    <i class="fa-solid fa-magnifying-glass st-cleaner-search-icon"></i>
+                                    <input
+                                        type="search"
+                                        class="st-cleaner-search-input"
+                                        data-ref="search-input"
+                                        placeholder="搜索名称 / 全拼 / 首字母 (如 kl、kelai、酒馆助手)..."
+                                        autocomplete="off"
+                                        spellcheck="false"
+                                    />
+                                    <button type="button" class="st-cleaner-search-clear" data-action="clear-search" hidden aria-label="清空搜索">
+                                        <i class="fa-solid fa-circle-xmark"></i>
+                                    </button>
+                                </div>
+                                <div class="st-cleaner-bulk-btns">
+                                    <button type="button" class="st-cleaner-btn-ghost" data-action="select-visible">全选结果</button>
+                                    <button type="button" class="st-cleaner-btn-ghost is-muted" data-action="deselect-visible">取消本页</button>
+                                </div>
+                            </div>
+                            <div class="st-cleaner-subpills" data-ref="subpills"></div>
+                        </div>
+
+                        <div class="st-cleaner-scan-banner" data-ref="scan-banner" hidden></div>
+
+                        <div class="st-cleaner-vlist-viewport st-cleaner-scroll" data-ref="vlist-viewport">
+                            <div class="st-cleaner-vlist-spacer" data-ref="vlist-spacer">
+                                <div class="st-cleaner-vlist-window" data-ref="vlist-window"></div>
+                            </div>
+                            <div class="st-cleaner-empty" data-ref="vlist-empty" hidden></div>
+                        </div>
+                    </section>
+
+                    <footer class="st-cleaner-footer">
+                        <div class="st-cleaner-footer-left">
+                            <button type="button" class="st-cleaner-selected-summary" data-action="open-confirm">
+                                <span class="st-cleaner-summary-dot"></span>
+                                <span data-ref="selected-count-text">已选 0 项</span>
+                            </button>
+                            <label class="st-cleaner-skip-toggle">
+                                <input type="checkbox" class="st-cleaner-switch-input" data-ref="skip-active-checkbox" checked />
+                                <span class="st-cleaner-switch-track" aria-hidden="true"><span class="st-cleaner-switch-thumb"></span></span>
+                                <span>跳过“正在使用”项</span>
+                            </label>
+                        </div>
+                        <div class="st-cleaner-footer-right">
+                            <button type="button" class="st-cleaner-btn-secondary" data-action="clear-all-selected" data-ref="clear-sel-btn" hidden>
+                                清空已选
+                            </button>
+                            <button type="button" class="st-cleaner-primary-btn" data-action="open-confirm" data-ref="delete-btn" disabled>
+                                <i class="fa-solid fa-trash-can"></i>
+                                <span data-ref="delete-btn-label">清理所选</span>
+                            </button>
+                        </div>
+                    </footer>
                 </div>
-                <button type="button" class="st-cleaner-delete-btn" data-action="open-confirm" data-ref="delete-btn" disabled>
-                    <i class="fa-solid fa-trash-can"></i>
-                    <span data-ref="delete-btn-label">清理所选</span>
-                </button>
-            </footer>
+            </div>
 
             <div class="st-cleaner-sheet-mask" data-ref="sheet-mask" hidden>
                 <div class="st-cleaner-sheet" data-ref="sheet"></div>
@@ -241,11 +254,11 @@ export function openCleanerModal(options = {}) {
     document.body.appendChild(root);
     document.body.appendChild(popover);
 
-    // Query key element refs once
     const refs = {
+        pageTitle: root.querySelector('[data-ref="page-title"]'),
+        pageSub: root.querySelector('[data-ref="page-sub"]'),
         overviewSection: root.querySelector('[data-view="overview"]'),
         workspaceSection: root.querySelector('[data-view="workspace"]'),
-        segBtns: [...root.querySelectorAll('.st-cleaner-seg-btn')],
         bootCard: root.querySelector('[data-ref="boot-card"]'),
         bentoGrid: root.querySelector('[data-ref="bento-grid"]'),
         sidebar: root.querySelector('[data-ref="sidebar"]'),
@@ -260,6 +273,7 @@ export function openCleanerModal(options = {}) {
         emptyEl: root.querySelector('[data-ref="vlist-empty"]'),
         selectedCountText: root.querySelector('[data-ref="selected-count-text"]'),
         skipCheckbox: root.querySelector('[data-ref="skip-active-checkbox"]'),
+        clearSelBtn: root.querySelector('[data-ref="clear-sel-btn"]'),
         deleteBtn: root.querySelector('[data-ref="delete-btn"]'),
         deleteBtnLabel: root.querySelector('[data-ref="delete-btn-label"]'),
         sheetMask: root.querySelector('[data-ref="sheet-mask"]'),
@@ -285,14 +299,150 @@ export function openCleanerModal(options = {}) {
         return map;
     }
 
+    function updateHeaderTitles() {
+        if (state.activeTab === 'overview') {
+            refs.pageTitle.textContent = '数据总览';
+            refs.pageSub.textContent = '按分类浏览酒馆数据资产、酒馆助手脚本与本次启动耗时统计';
+        } else {
+            const def = catDefMap.get(state.activeCategory);
+            refs.pageTitle.textContent = def ? def.label : '分类清理';
+            refs.pageSub.textContent = def ? def.shortDesc : '勾选不需要的冗余资产进行安全批量清理';
+        }
+    }
+
     // =========================================================================
-    // View 1: Startup Diagnostics + 9-Tile Bento Grid
+    // Persistent Left Sidebar & Mobile Top Strip (Unified Navigation)
+    // =========================================================================
+    function renderNavigation() {
+        const overviewSummary = scanner.getOverviewSummary();
+        const selectedByCat = countSelectedByCategory();
+        const totalSelected = state.selectedKeys.size;
+        const isOverview = state.activeTab === 'overview';
+
+        const overviewNavHtml = `
+            <button
+                type="button"
+                class="st-cleaner-nav-item ${isOverview ? 'is-active' : ''}"
+                data-action="nav-overview"
+            >
+                <span class="st-cleaner-nav-left">
+                    <span class="st-cleaner-nav-icon"><i class="fa-solid fa-table-cells-large"></i></span>
+                    <span class="st-cleaner-nav-label">数据总览</span>
+                </span>
+                <span class="st-cleaner-nav-right">
+                    ${totalSelected > 0 ? `<span class="st-cleaner-nav-badge">${totalSelected}</span>` : ''}
+                </span>
+            </button>
+            <div class="st-cleaner-nav-group-label">分类管理</div>
+        `;
+
+        const catItemsHtml = CATEGORY_DEFS.map(def => {
+            const isActive = !isOverview && def.id === state.activeCategory;
+            const info = overviewSummary[def.id];
+            const selCount = selectedByCat.get(def.id) || 0;
+            const hasCount = info?.count !== null && info?.count !== undefined;
+            const countLabel = hasCount ? info.count : '';
+
+            return `
+                <button
+                    type="button"
+                    class="st-cleaner-nav-item ${isActive ? 'is-active' : ''}"
+                    data-action="select-category"
+                    data-cat="${escapeHtml(def.id)}"
+                >
+                    <span class="st-cleaner-nav-left">
+                        <span class="st-cleaner-nav-icon"><i class="${escapeHtml(def.icon)}"></i></span>
+                        <span class="st-cleaner-nav-label">${escapeHtml(def.label)}</span>
+                    </span>
+                    <span class="st-cleaner-nav-right">
+                        ${selCount > 0
+                            ? `<span class="st-cleaner-nav-badge">${selCount}</span>`
+                            : (countLabel !== '' ? `<span class="st-cleaner-nav-count">${escapeHtml(countLabel)}</span>` : '')}
+                    </span>
+                </button>
+            `;
+        }).join('');
+
+        refs.sidebar.innerHTML = overviewNavHtml + catItemsHtml;
+
+        const mobileOverviewPill = `
+            <button
+                type="button"
+                class="st-cleaner-cat-pill ${isOverview ? 'is-active' : ''}"
+                data-action="nav-overview"
+            >
+                <i class="fa-solid fa-table-cells-large"></i>
+                <span>总览</span>
+            </button>
+        `;
+        const mobileCatPills = CATEGORY_DEFS.map(def => {
+            const isActive = !isOverview && def.id === state.activeCategory;
+            const selCount = selectedByCat.get(def.id) || 0;
+            return `
+                <button
+                    type="button"
+                    class="st-cleaner-cat-pill ${isActive ? 'is-active' : ''}"
+                    data-action="select-category"
+                    data-cat="${escapeHtml(def.id)}"
+                >
+                    <i class="${escapeHtml(def.icon)}"></i>
+                    <span>${escapeHtml(def.label)}</span>
+                    ${selCount > 0 ? `<span class="st-cleaner-pill-sel">${selCount}</span>` : ''}
+                </button>
+            `;
+        }).join('');
+        refs.mobileCats.innerHTML = mobileOverviewPill + mobileCatPills;
+    }
+
+    // =========================================================================
+    // View 1: Morandi Pastel Metric Cards + Editorial Statistics Progress Bars
     // =========================================================================
     function renderOverview() {
         const { currentBoot, previousBoot } = getBootData();
         const overviewSummary = scanner.getOverviewSummary();
         const selectedByCat = countSelectedByCategory();
+        const buckets = Array.isArray(currentBoot?.buckets) ? currentBoot.buckets : [];
+        const bucketMap = new Map(buckets.map(b => [b.id, b]));
 
+        // 1. 9-Tile Low-Saturation Morandi Pastel Bento Cards
+        refs.bentoGrid.innerHTML = CATEGORY_DEFS.map(def => {
+            const info = overviewSummary[def.id] || { badgeText: '待扫描' };
+            const selCount = selectedByCat.get(def.id) || 0;
+            const bootBucket = def.bootBucketKey ? bucketMap.get(def.bootBucketKey) : null;
+            const slowNote = bootBucket && bootBucket.durationMs >= 120
+                ? ` · 启动 ${formatDuration(bootBucket.durationMs)}`
+                : '';
+            const rawCount = String(info.badgeText || '').replace(/\s*项$/, '');
+            const isNumeric = /^\d+\+?$/.test(rawCount);
+
+            return `
+                <button
+                    type="button"
+                    class="st-cleaner-bento-tile"
+                    data-pastel="${escapeHtml(def.id)}"
+                    data-action="jump-category"
+                    data-cat="${escapeHtml(def.id)}"
+                    data-sub="all"
+                >
+                    <div class="st-cleaner-tile-top">
+                        <span class="st-cleaner-tile-icon"><i class="${escapeHtml(def.icon)}"></i></span>
+                        <div class="st-cleaner-tile-metric">
+                            ${selCount > 0 ? `<span class="st-cleaner-nav-badge">已选 ${selCount}</span>` : ''}
+                            <span class="${isNumeric ? 'st-cleaner-tile-bignum' : 'st-cleaner-tile-scanpill'}">${escapeHtml(rawCount || '浏览')}</span>
+                        </div>
+                    </div>
+                    <div class="st-cleaner-tile-bottom">
+                        <div class="st-cleaner-tile-title-row">
+                            <span class="st-cleaner-tile-title">${escapeHtml(def.label)}</span>
+                            <i class="fa-solid fa-arrow-right st-cleaner-tile-arrow"></i>
+                        </div>
+                        <div class="st-cleaner-tile-desc">${escapeHtml(def.shortDesc)}${escapeHtml(slowNote)}</div>
+                    </div>
+                </button>
+            `;
+        }).join('');
+
+        // 2. Editorial Statistics Horizontal Progress Bars
         const totalMs = currentBoot?.totalMs || 0;
         let deltaHtml = '<span class="st-cleaner-boot-delta is-neutral">首次诊断基线</span>';
         if (previousBoot && previousBoot.totalMs > 0 && totalMs > 0) {
@@ -300,30 +450,35 @@ export function openCleanerModal(options = {}) {
             if (Math.abs(diff) < 30) {
                 deltaHtml = `<span class="st-cleaner-boot-delta is-neutral">与上次持平 (${formatDuration(previousBoot.totalMs)})</span>`;
             } else if (diff < 0) {
-                deltaHtml = `<span class="st-cleaner-boot-delta is-faster">较上次提速 ${formatDuration(Math.abs(diff))}</span>`;
+                deltaHtml = `<span class="st-cleaner-boot-delta is-faster">提速 ${formatDuration(Math.abs(diff))}</span>`;
             } else {
-                deltaHtml = `<span class="st-cleaner-boot-delta is-slower">较上次变慢 +${formatDuration(diff)}</span>`;
+                deltaHtml = `<span class="st-cleaner-boot-delta is-slower">+${formatDuration(diff)}</span>`;
             }
         }
 
-        const buckets = Array.isArray(currentBoot?.buckets) ? currentBoot.buckets : [];
-        const sumBucketMs = Math.max(1, buckets.reduce((acc, b) => acc + (b.durationMs || 0), 0));
-        const nonZeroBuckets = buckets.filter(b => b.durationMs > 0);
+        const sumBucketMs = Math.max(1, totalMs || buckets.reduce((acc, b) => acc + (b.durationMs || 0), 0));
+        const sortedBuckets = [...buckets].sort((a, b) => (b.durationMs || 0) - (a.durationMs || 0));
+        const topBars = sortedBuckets.slice(0, 4);
 
-        const segBarHtml = nonZeroBuckets.length > 0
-            ? nonZeroBuckets.map(b => {
-                const pct = Math.max(3, Math.round((b.durationMs / sumBucketMs) * 100));
-                return `<div class="st-cleaner-segbar-part" data-bucket="${escapeHtml(b.id)}" style="width:${pct}%" title="${escapeHtml(b.label)}: ${escapeHtml(formatDuration(b.durationMs))}"></div>`;
-            }).join('')
-            : '<div class="st-cleaner-segbar-part" data-bucket="characters" style="width:100%;opacity:0.25"></div>';
-
-        const legendHtml = (nonZeroBuckets.length > 0 ? nonZeroBuckets.slice(0, 4) : buckets.slice(0, 3))
-            .map(b => `
-                <span class="st-cleaner-legend-item">
-                    <span class="st-cleaner-legend-dot" style="background:${escapeHtml(b.color)}"></span>
-                    <span>${escapeHtml(b.label)} · ${escapeHtml(formatDuration(b.durationMs))}</span>
-                </span>
-            `).join('');
+        const statBarsHtml = topBars.map((b, idx) => {
+            const dur = b.durationMs || 0;
+            const pct = dur > 0 ? Math.min(100, Math.max(6, Math.round((dur / sumBucketMs) * 100))) : 4;
+            const barTone = idx % 2 === 1 ? 'is-emerald' : 'is-obsidian';
+            return `
+                <div class="st-cleaner-stat-item">
+                    <div class="st-cleaner-stat-row">
+                        <span class="st-cleaner-stat-label">${escapeHtml(b.label)}</span>
+                        <span class="st-cleaner-stat-val">
+                            <strong>${escapeHtml(formatDuration(dur))}</strong>
+                            <em>/ ${escapeHtml(formatBytes(b.bytes || 0))}</em>
+                        </span>
+                    </div>
+                    <div class="st-cleaner-stat-track">
+                        <div class="st-cleaner-stat-fill ${barTone}" style="width:${pct}%"></div>
+                    </div>
+                </div>
+            `;
+        }).join('');
 
         const detailRowsHtml = buckets.map(b => `
             <div class="st-cleaner-api-row">
@@ -347,106 +502,27 @@ export function openCleanerModal(options = {}) {
         `).join('');
 
         refs.bootCard.innerHTML = `
-            <div class="st-cleaner-boot-head">
-                <div class="st-cleaner-boot-metrics">
-                    <span class="st-cleaner-boot-title">本次酒馆启动网络与资源耗时</span>
-                    <span class="st-cleaner-boot-val">${escapeHtml(formatDuration(totalMs))}</span>
+            <div class="st-cleaner-stats-head">
+                <div class="st-cleaner-stats-title-group">
+                    <span class="st-cleaner-stats-heading">启动耗时统计</span>
+                    <span class="st-cleaner-stats-total">${escapeHtml(formatDuration(totalMs))}</span>
                     ${deltaHtml}
                 </div>
                 <button type="button" class="st-cleaner-link-btn" data-action="toggle-boot-detail">
-                    <span>${state.bootDetailExpanded ? '收起明细' : '接口明细'}</span>
+                    <span>${state.bootDetailExpanded ? '收起接口明细' : '查看接口明细'}</span>
                     <i class="fa-solid fa-chevron-${state.bootDetailExpanded ? 'up' : 'down'}"></i>
                 </button>
             </div>
-            <div class="st-cleaner-segbar">${segBarHtml}</div>
-            <div class="st-cleaner-boot-legend">${legendHtml}</div>
+            <div class="st-cleaner-stat-bars">${statBarsHtml}</div>
             <div class="st-cleaner-boot-detail" ${state.bootDetailExpanded ? '' : 'hidden'}>
                 ${detailRowsHtml}
             </div>
         `;
-
-        // Map slow startup bucket durations onto the 9 Bento tiles
-        const bucketMap = new Map(buckets.map(b => [b.id, b]));
-        refs.bentoGrid.innerHTML = CATEGORY_DEFS.map(def => {
-            const info = overviewSummary[def.id] || { badgeText: '点击扫描' };
-            const selCount = selectedByCat.get(def.id) || 0;
-            const bootBucket = def.bootBucketKey ? bucketMap.get(def.bootBucketKey) : null;
-            const showSlowBadge = bootBucket && bootBucket.durationMs >= 120;
-
-            return `
-                <button
-                    type="button"
-                    class="st-cleaner-bento-tile"
-                    data-action="jump-category"
-                    data-cat="${escapeHtml(def.id)}"
-                    data-sub="all"
-                >
-                    <div class="st-cleaner-tile-top">
-                        <div class="st-cleaner-tile-title-wrap">
-                            <span class="st-cleaner-tile-icon"><i class="${escapeHtml(def.icon)}"></i></span>
-                            <span class="st-cleaner-tile-title">${escapeHtml(def.label)}</span>
-                        </div>
-                        <div class="st-cleaner-tile-badges">
-                            ${selCount > 0 ? `<span class="st-cleaner-badge st-cleaner-badge-selected">已选 ${selCount}</span>` : ''}
-                            ${showSlowBadge ? `<span class="st-cleaner-badge st-cleaner-badge-slow">⏱ ${escapeHtml(formatDuration(bootBucket.durationMs))}</span>` : ''}
-                            <span class="st-cleaner-badge st-cleaner-badge-muted">${escapeHtml(info.badgeText)}</span>
-                        </div>
-                    </div>
-                    <div class="st-cleaner-tile-desc">${escapeHtml(def.shortDesc)}</div>
-                </button>
-            `;
-        }).join('');
     }
 
     // =========================================================================
-    // View 2: Navigation + Subpills + Fixed-Height Windowed Virtual List
+    // View 2: Subpills + Fixed-Height Windowed Virtual List
     // =========================================================================
-    function renderNavigation() {
-        const overviewSummary = scanner.getOverviewSummary();
-        const selectedByCat = countSelectedByCategory();
-
-        refs.sidebar.innerHTML = CATEGORY_DEFS.map(def => {
-            const isActive = def.id === state.activeCategory;
-            const info = overviewSummary[def.id];
-            const selCount = selectedByCat.get(def.id) || 0;
-            const countLabel = info?.count !== null && info?.count !== undefined ? info.count : '·';
-            return `
-                <button
-                    type="button"
-                    class="st-cleaner-nav-item ${isActive ? 'is-active' : ''}"
-                    data-action="select-category"
-                    data-cat="${escapeHtml(def.id)}"
-                >
-                    <span class="st-cleaner-nav-left">
-                        <i class="${escapeHtml(def.icon)}"></i>
-                        <span class="st-cleaner-nav-label">${escapeHtml(def.label)}</span>
-                    </span>
-                    <span class="st-cleaner-nav-right">
-                        ${selCount > 0 ? `<span class="st-cleaner-badge st-cleaner-badge-selected">${selCount}</span>` : ''}
-                        <span class="st-cleaner-badge st-cleaner-badge-muted">${escapeHtml(countLabel)}</span>
-                    </span>
-                </button>
-            `;
-        }).join('');
-
-        refs.mobileCats.innerHTML = CATEGORY_DEFS.map(def => {
-            const isActive = def.id === state.activeCategory;
-            const selCount = selectedByCat.get(def.id) || 0;
-            return `
-                <button
-                    type="button"
-                    class="st-cleaner-cat-pill ${isActive ? 'is-active' : ''}"
-                    data-action="select-category"
-                    data-cat="${escapeHtml(def.id)}"
-                >
-                    <i class="${escapeHtml(def.icon)}"></i>
-                    <span>${escapeHtml(def.label)}</span>
-                    ${selCount > 0 ? `<span>(${selCount})</span>` : ''}
-                </button>
-            `;
-        }).join('');
-    }
-
     function renderSubpills(categoryRecord) {
         if (!categoryRecord) {
             refs.subpills.innerHTML = '';
@@ -533,11 +609,11 @@ export function openCleanerModal(options = {}) {
             refs.spacer.hidden = true;
             refs.emptyEl.hidden = false;
             const warnHtml = categoryRecord.warnings?.length
-                ? `<div style="font-size:12px;opacity:0.8">${escapeHtml(categoryRecord.warnings.join(' '))}</div>`
+                ? `<div class="st-cleaner-empty-warn">${escapeHtml(categoryRecord.warnings.join(' '))}</div>`
                 : '';
             refs.emptyEl.innerHTML = `
-                <div class="st-cleaner-empty-icon"><i class="fa-solid fa-box-open"></i></div>
-                <div>${terms.length > 0 ? '未找到匹配搜索条件的数据项' : '当前分类暂无可清理数据'}</div>
+                <div class="st-cleaner-empty-icon"><i class="fa-regular fa-folder-open"></i></div>
+                <div class="st-cleaner-empty-title">${terms.length > 0 ? '未找到匹配搜索条件的数据项' : '当前分类暂无可清理数据'}</div>
                 ${warnHtml}
             `;
             refs.windowEl.innerHTML = '';
@@ -550,7 +626,6 @@ export function openCleanerModal(options = {}) {
 
     /**
      * Renders ONLY the visible slice of `state.flatRows` inside `.st-cleaner-vlist-window`.
-     * Constant ~25-40 DOM nodes regardless of 100 or 20,000 items.
      */
     function renderVisibleVirtualWindow(force = false) {
         const rows = state.flatRows;
@@ -597,7 +672,8 @@ export function openCleanerModal(options = {}) {
                     <div class="st-cleaner-vgroup-row" data-row-idx="${i}">
                         <div class="st-cleaner-vgroup-title" data-action="toggle-collapse" data-collapse-key="${escapeHtml(row.collapseKey)}">
                             <i class="fa-solid fa-chevron-${row.isCollapsed ? 'right' : 'down'}"></i>
-                            <span class="st-cleaner-vgroup-name">${escapeHtml(row.label)} (${row.items.length})</span>
+                            <span class="st-cleaner-vgroup-name">${escapeHtml(row.label)}</span>
+                            <span class="st-cleaner-vgroup-count">${row.items.length}</span>
                         </div>
                         <button type="button" class="st-cleaner-vgroup-btn" data-action="toggle-group-select" data-row-idx="${i}">
                             ${allGroupSelected ? '取消本组' : '全选本组'}
@@ -610,7 +686,7 @@ export function openCleanerModal(options = {}) {
                 const badgesHtml = (item.badges || []).slice(0, 2).map(b => {
                     const cls = b.type === 'active'
                         ? 'st-cleaner-badge-active'
-                        : (b.type === 'warn' ? 'st-cleaner-badge-slow' : 'st-cleaner-badge-muted');
+                        : (b.type === 'warn' ? 'st-cleaner-badge-warn' : 'st-cleaner-badge-muted');
                     return `<span class="st-cleaner-badge ${cls}">${escapeHtml(b.text)}</span>`;
                 }).join('');
 
@@ -657,11 +733,15 @@ export function openCleanerModal(options = {}) {
         if (rawTotal === 0) {
             refs.selectedCountText.textContent = '已选 0 项';
         } else if (skippedCount > 0) {
-            refs.selectedCountText.textContent = `已选 ${rawTotal} 项（将执行 ${execCount}，保护跳过 ${skippedCount}）`;
+            refs.selectedCountText.textContent = `已选 ${rawTotal} 项（可执行 ${execCount} · 保护 ${skippedCount}）`;
         } else {
             refs.selectedCountText.textContent = `已选 ${execCount} 项`;
         }
 
+        refs.selectedCountText.parentElement?.classList.toggle('has-selection', rawTotal > 0);
+        if (refs.clearSelBtn) {
+            refs.clearSelBtn.hidden = rawTotal === 0 || state.isDeleting;
+        }
         refs.deleteBtn.disabled = execCount === 0 || state.isDeleting;
         refs.deleteBtnLabel.textContent = execCount > 0 ? `清理所选 (${execCount})` : '清理所选';
     }
@@ -719,11 +799,8 @@ export function openCleanerModal(options = {}) {
     function switchTab(nextTab) {
         hidePopover();
         state.activeTab = nextTab === 'workspace' ? 'workspace' : 'overview';
-        for (const btn of refs.segBtns) {
-            const active = btn.dataset.tab === state.activeTab;
-            btn.classList.toggle('is-active', active);
-            btn.setAttribute('aria-selected', String(active));
-        }
+        updateHeaderTitles();
+        renderNavigation();
 
         if (state.activeTab === 'overview') {
             refs.overviewSection.hidden = false;
@@ -732,7 +809,6 @@ export function openCleanerModal(options = {}) {
         } else {
             refs.overviewSection.hidden = true;
             refs.workspaceSection.hidden = false;
-            renderNavigation();
             loadActiveCategory(false);
         }
     }
@@ -744,6 +820,7 @@ export function openCleanerModal(options = {}) {
         if (state.activeTab !== 'workspace') {
             switchTab('workspace');
         } else {
+            updateHeaderTitles();
             renderNavigation();
             loadActiveCategory(false);
         }
@@ -758,9 +835,9 @@ export function openCleanerModal(options = {}) {
 
         const badgesText = (item.badges || []).map(b => b.text).join(' · ');
         popover.innerHTML = `
-            <div style="font-weight:600;margin-bottom:6px">${escapeHtml(item.title)}</div>
-            <div style="font-size:12px;color:var(--stc-text-secondary);margin-bottom:4px">${escapeHtml(item.subtitle || '无附加描述')}</div>
-            ${badgesText ? `<div style="font-size:11px;color:var(--stc-accent)">状态: ${escapeHtml(badgesText)}</div>` : ''}
+            <div class="st-cleaner-pop-title">${escapeHtml(item.title)}</div>
+            <div class="st-cleaner-pop-sub">${escapeHtml(item.subtitle || '无附加描述')}</div>
+            ${badgesText ? `<div class="st-cleaner-pop-meta">状态：${escapeHtml(badgesText)}</div>` : ''}
         `;
         popover.hidden = false;
 
@@ -783,7 +860,7 @@ export function openCleanerModal(options = {}) {
     }
 
     // =========================================================================
-    // 75dvh Bottom Sheet: Confirmation -> 3-Stage Smooth Progress -> Report
+    // Confirmation Dialog -> 3-Stage Smooth Progress -> Completion Report
     // =========================================================================
     function openConfirmationSheet() {
         hidePopover();
@@ -844,21 +921,24 @@ export function openCleanerModal(options = {}) {
 
         refs.sheet.innerHTML = `
             <div class="st-cleaner-sheet-head">
-                <span class="st-cleaner-sheet-title">确认清理清单（共 ${preview.validItems.length} 项）</span>
+                <div>
+                    <div class="st-cleaner-sheet-title">确认清理清单（共 ${preview.validItems.length} 项）</div>
+                    <div class="st-cleaner-sheet-sub">永久删除前请核对以下分类汇总</div>
+                </div>
                 <button type="button" class="st-cleaner-icon-btn" data-action="close-sheet" aria-label="关闭确认面板">
                     <i class="fa-solid fa-xmark"></i>
                 </button>
             </div>
             <div class="st-cleaner-sheet-body st-cleaner-scroll">
                 ${warnings.length > 0 ? `<div class="st-cleaner-warn-box">${warnings.map(w => `<div>• ${escapeHtml(w)}</div>`).join('')}</div>` : ''}
-                ${coalescedParts.length > 0 ? `<div style="font-size:12px;color:var(--stc-accent)">⚡ 高速合并写回已就绪：内嵌数据仅需 ${escapeHtml(coalescedParts.join(' + '))}</div>` : ''}
-                ${groupCardsHtml || '<div style="font-size:13px;color:var(--stc-text-secondary)">当前无可执行的非活跃项目。</div>'}
+                ${coalescedParts.length > 0 ? `<div class="st-cleaner-coalesce-note"><i class="fa-solid fa-bolt"></i> 高速同源合并写回：内嵌脚本与世界书仅需 ${escapeHtml(coalescedParts.join(' + '))}</div>` : ''}
+                ${groupCardsHtml || '<div class="st-cleaner-empty-inline">当前无可执行的非活跃项目。</div>'}
             </div>
             <div class="st-cleaner-sheet-foot">
-                <button type="button" class="st-cleaner-mini-btn" data-action="clear-all-selected" style="margin-right:auto">清空全部已选</button>
+                <button type="button" class="st-cleaner-btn-ghost is-danger" data-action="clear-all-selected" style="margin-right:auto">清空已选</button>
                 <button type="button" class="st-cleaner-btn-secondary" data-action="close-sheet">取消</button>
-                <button type="button" class="st-cleaner-delete-btn" data-action="confirm-execute-delete" ${preview.validItems.length === 0 ? 'disabled' : ''}>
-                    <i class="fa-solid fa-bolt"></i> 确认永久删除 (${preview.validItems.length})
+                <button type="button" class="st-cleaner-danger-btn" data-action="confirm-execute-delete" ${preview.validItems.length === 0 ? 'disabled' : ''}>
+                    <i class="fa-solid fa-trash-can"></i> 确认永久删除 (${preview.validItems.length})
                 </button>
             </div>
         `;
@@ -873,11 +953,11 @@ export function openCleanerModal(options = {}) {
         refs.sheet.innerHTML = `
             <div class="st-cleaner-sheet-head">
                 <span class="st-cleaner-sheet-title">正在高速安全清理...</span>
-                <span class="st-cleaner-badge st-cleaner-badge-selected" data-ref="prog-pct">0%</span>
+                <span class="st-cleaner-nav-badge" data-ref="prog-pct">0%</span>
             </div>
             <div class="st-cleaner-sheet-body">
                 <div class="st-cleaner-progress-bar-wrap">
-                    <div class="st-cleaner-progress-bar-fill" data-ref="prog-bar" style="width:2%"></div>
+                    <div class="st-cleaner-progress-bar-fill" data-ref="prog-bar" style="width:4%"></div>
                 </div>
                 <div class="st-cleaner-stage-list">
                     <div class="st-cleaner-stage-item is-running" data-stage-row="1">
@@ -941,7 +1021,6 @@ export function openCleanerModal(options = {}) {
             },
         });
 
-        // Remove succeeded keys from selection; keep failed/skipped if user wants to inspect
         for (const item of report.succeeded) {
             state.selectedKeys.delete(item.key);
         }
@@ -963,12 +1042,12 @@ export function openCleanerModal(options = {}) {
         refs.sheet.innerHTML = `
             <div class="st-cleaner-sheet-head">
                 <span class="st-cleaner-sheet-title">清理执行完毕</span>
+                <span class="st-cleaner-badge st-cleaner-badge-active">已完成落盘</span>
             </div>
             <div class="st-cleaner-sheet-body st-cleaner-scroll">
                 <div class="st-cleaner-confirm-group">
                     <div class="st-cleaner-confirm-group-head">
                         <span>本次清理统计</span>
-                        <span class="st-cleaner-badge st-cleaner-badge-active">全部阶段已完成</span>
                     </div>
                     <div class="st-cleaner-confirm-sample">
                         成功删除 <strong>${report.succeeded.length}</strong> 项 · 保护/跳过 <strong>${report.skipped.length}</strong> 项 · 失败拦截 <strong>${report.failed.length}</strong> 项
@@ -979,11 +1058,10 @@ export function openCleanerModal(options = {}) {
             </div>
             <div class="st-cleaner-sheet-foot">
                 <button type="button" class="st-cleaner-btn-secondary" data-action="finish-report">继续管理</button>
-                ${report.requiresReload ? '<button type="button" class="st-cleaner-delete-btn" style="background:var(--stc-accent)" data-action="reload-page"><i class="fa-solid fa-rotate-right"></i> 立即刷新页面</button>' : ''}
+                ${report.requiresReload ? '<button type="button" class="st-cleaner-primary-btn" data-action="reload-page"><i class="fa-solid fa-rotate-right"></i> 立即刷新页面</button>' : ''}
             </div>
         `;
 
-        // Refresh UI state in background
         await scanner.warmOverviewMetadata().catch(() => {});
         renderOverview();
         renderNavigation();
@@ -1036,19 +1114,12 @@ export function openCleanerModal(options = {}) {
             hidePopover();
         }
 
-        // Backdrop click outside modal closes modal (unless deleting)
         if (target === root && !state.isDeleting) {
             closeModal();
             return;
         }
         if (target === refs.sheetMask && !state.isDeleting) {
             refs.sheetMask.hidden = true;
-            return;
-        }
-
-        const tabBtn = target.closest('.st-cleaner-seg-btn[data-tab]');
-        if (tabBtn) {
-            switchTab(tabBtn.dataset.tab);
             return;
         }
 
@@ -1061,9 +1132,36 @@ export function openCleanerModal(options = {}) {
                 if (!state.isDeleting) closeModal();
                 break;
 
-            case 'toggle-theme':
+            case 'toggle-theme': {
                 state.theme = state.theme === 'dark' ? 'light' : 'dark';
                 root.dataset.theme = state.theme;
+                try {
+                    localStorage.setItem('st_delEverything_theme_v1', state.theme);
+                } catch {
+                    // Ignore storage errors
+                }
+                const iconEl = actionEl.querySelector('i');
+                if (iconEl) {
+                    iconEl.className = `fa-solid ${state.theme === 'dark' ? 'fa-sun' : 'fa-moon'}`;
+                }
+                break;
+            }
+
+            case 'nav-overview':
+                if (state.activeTab !== 'overview') {
+                    switchTab('overview');
+                }
+                break;
+
+            case 'header-refresh':
+                if (state.activeTab === 'overview') {
+                    scanner.warmOverviewMetadata().then(() => {
+                        renderOverview();
+                        renderNavigation();
+                    }).catch(() => {});
+                } else {
+                    loadActiveCategory(true);
+                }
                 break;
 
             case 'toggle-boot-detail':
@@ -1076,12 +1174,8 @@ export function openCleanerModal(options = {}) {
                 break;
 
             case 'select-category':
-                if (actionEl.dataset.cat && actionEl.dataset.cat !== state.activeCategory) {
-                    state.activeCategory = actionEl.dataset.cat;
-                    state.activeSubgroup = 'all';
-                    refs.viewport.scrollTop = 0;
-                    renderNavigation();
-                    loadActiveCategory(false);
+                if (actionEl.dataset.cat) {
+                    selectCategoryAndOpen(actionEl.dataset.cat, 'all');
                 }
                 break;
 
@@ -1204,7 +1298,7 @@ export function openCleanerModal(options = {}) {
                 refs.sheetMask.hidden = true;
                 renderVisibleVirtualWindow(true);
                 renderNavigation();
-                renderOverview();
+                if (state.activeTab === 'overview') renderOverview();
                 updateFooterBar();
                 break;
 
@@ -1252,8 +1346,11 @@ export function openCleanerModal(options = {}) {
     // Initial render + non-blocking metadata warm
     switchTab(state.activeTab);
     scanner.warmOverviewMetadata().then(() => {
-        if (activeModalInstance && state.activeTab === 'overview') {
-            renderOverview();
+        if (activeModalInstance) {
+            renderNavigation();
+            if (state.activeTab === 'overview') {
+                renderOverview();
+            }
         }
     }).catch(() => {});
 

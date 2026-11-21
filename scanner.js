@@ -13,11 +13,12 @@ export const CATEGORY_DEFS = [
     {
         id: 'characters',
         label: '角色与群组',
-        shortDesc: '角色卡、立绘表情与群聊房间',
+        shortDesc: '角色卡、独立表情包与群聊房间',
         icon: 'fa-solid fa-users',
         bootBucketKey: 'characters',
         subgroups: [
             { id: 'char_cards', label: '角色卡' },
+            { id: 'char_sprites', label: '角色立绘表情包' },
             { id: 'groups', label: '群聊房间' },
         ],
     },
@@ -34,8 +35,8 @@ export const CATEGORY_DEFS = [
     },
     {
         id: 'regex',
-        label: '正则脚本',
-        shortDesc: '全局、角色局部、预设内嵌正则与开关组合',
+        label: '正则与脚本',
+        shortDesc: '正则脚本、酒馆助手脚本与全局持久变量',
         icon: 'fa-solid fa-code',
         bootBucketKey: null,
         subgroups: [
@@ -43,6 +44,10 @@ export const CATEGORY_DEFS = [
             { id: 'regex_scoped', label: '角色局部正则' },
             { id: 'regex_preset', label: '预设内嵌正则' },
             { id: 'regex_combos', label: '正则预设组合' },
+            { id: 'th_global', label: '酒馆助手全局脚本' },
+            { id: 'th_char', label: '酒馆助手角色脚本' },
+            { id: 'th_preset', label: '酒馆助手预设脚本' },
+            { id: 'global_vars', label: 'ST 全局脚本变量' },
         ],
     },
     {
@@ -98,14 +103,16 @@ export const CATEGORY_DEFS = [
     },
     {
         id: 'media',
-        label: '媒体与辅助',
-        shortDesc: '快捷回复、资料库附件、画廊图片与标签',
+        label: '媒体与资产',
+        shortDesc: '快捷回复、资料库、画廊、音效资产、工作流与标签',
         icon: 'fa-solid fa-photo-film',
         bootBucketKey: null,
         subgroups: [
             { id: 'quick_replies', label: '快捷回复集' },
             { id: 'databank', label: '资料库附件' },
             { id: 'gallery_images', label: '画廊与聊天图片' },
+            { id: 'user_assets', label: '音效与环境音资产' },
+            { id: 'comfy_workflows', label: 'ComfyUI 生图工作流' },
             { id: 'tags', label: '角色标签' },
         ],
     },
@@ -351,6 +358,120 @@ export function extractNamedPresets(settingsArr, namesMapOrArr) {
         }
     }
     return out;
+}
+
+export const BUILTIN_COMFY_WORKFLOWS = new Set([
+    'Default_Comfy_Workflow.json',
+    'Char_Avatar_Comfy_Workflow.json',
+]);
+
+/**
+ * Extracts flattened TavernHelper / JS-Slash-Runner scripts from both v4 (`ScriptTree[]`
+ * with `{ type: 'script' | 'folder', scripts }`) and v3 legacy (`{ type: 'script' | 'folder', value }`).
+ * @param {any} treeArr
+ * @returns {Array<{ id: string, name: string, enabled: boolean, info: string, folderName: string, folderEnabled: boolean }>}
+ */
+export function extractTavernHelperScripts(treeArr) {
+    if (!Array.isArray(treeArr)) return [];
+    const results = [];
+    for (let i = 0; i < treeArr.length; i++) {
+        const node = treeArr[i];
+        if (!node || typeof node !== 'object') continue;
+
+        if (node.type === 'folder') {
+            const folderObj = (node.value && !Array.isArray(node.value) && typeof node.value === 'object')
+                ? node.value
+                : node;
+            const folderName = String(folderObj.name || node.name || '脚本文件夹');
+            const folderEnabled = (folderObj.enabled ?? node.enabled) !== false;
+            const children = Array.isArray(node.scripts)
+                ? node.scripts
+                : (Array.isArray(node.value)
+                    ? node.value
+                    : (Array.isArray(folderObj.scripts) ? folderObj.scripts : []));
+            for (let k = 0; k < children.length; k++) {
+                const rawChild = children[k]?.type === 'script' && children[k]?.value ? children[k].value : children[k];
+                if (!rawChild || typeof rawChild !== 'object') continue;
+                results.push({
+                    id: String(rawChild.id ?? `th_f_${i}_${k}`),
+                    name: String(rawChild.name || `未命名脚本 #${k + 1}`),
+                    enabled: Boolean(rawChild.enabled),
+                    info: String(rawChild.info || ''),
+                    folderName,
+                    folderEnabled,
+                });
+            }
+            continue;
+        }
+
+        const rawScript = node.type === 'script' && node.value && typeof node.value === 'object'
+            ? node.value
+            : node;
+        results.push({
+            id: String(rawScript.id ?? `th_${i}`),
+            name: String(rawScript.name || `未命名脚本 #${i + 1}`),
+            enabled: Boolean(rawScript.enabled),
+            info: String(rawScript.info || ''),
+            folderName: '',
+            folderEnabled: true,
+        });
+    }
+    return results;
+}
+
+/**
+ * Removes scripts whose IDs are in `removeIdSet` from a v4 or v3 TavernHelper ScriptTree array
+ * without destroying remaining folder scripts or unrelated scripts.
+ * @param {any[]} treeArr
+ * @param {Set<string>} removeIdSet
+ * @returns {any[]}
+ */
+export function pruneTavernHelperTree(treeArr, removeIdSet) {
+    if (!Array.isArray(treeArr) || !removeIdSet || removeIdSet.size === 0) {
+        return Array.isArray(treeArr) ? treeArr : [];
+    }
+    const nextTree = [];
+    for (let i = 0; i < treeArr.length; i++) {
+        const node = treeArr[i];
+        if (!node || typeof node !== 'object') continue;
+
+        if (node.type === 'folder') {
+            const filterChildren = (arr) => arr.filter((child, k) => {
+                const raw = child?.type === 'script' && child?.value ? child.value : child;
+                const sid = String(raw?.id ?? `th_f_${i}_${k}`);
+                return !removeIdSet.has(sid);
+            });
+
+            if (Array.isArray(node.scripts)) {
+                const kept = filterChildren(node.scripts);
+                if (kept.length > 0 || node.scripts.length === 0) {
+                    nextTree.push({ ...node, scripts: kept });
+                }
+            } else if (Array.isArray(node.value)) {
+                const kept = filterChildren(node.value);
+                if (kept.length > 0 || node.value.length === 0) {
+                    nextTree.push({ ...node, value: kept });
+                }
+            } else if (node.value && typeof node.value === 'object' && Array.isArray(node.value.scripts)) {
+                const kept = filterChildren(node.value.scripts);
+                if (kept.length > 0 || node.value.scripts.length === 0) {
+                    nextTree.push({ ...node, value: { ...node.value, scripts: kept } });
+                }
+            } else {
+                nextTree.push(node);
+            }
+            continue;
+        }
+
+        const rawScript = node.type === 'script' && node.value && typeof node.value === 'object'
+            ? node.value
+            : node;
+        const sid = String(rawScript?.id ?? `th_${i}`);
+        if (!removeIdSet.has(sid)) {
+            nextTree.push(node);
+        }
+    }
+    return nextTree;
 }
 
 /**
@@ -620,12 +741,22 @@ export function createScannerSession(options = {}) {
                 case 'regex': {
                     const globalCount = Array.isArray(extSettings.regex) ? extSettings.regex.length : 0;
                     const comboCount = Array.isArray(extSettings.regex_presets) ? extSettings.regex_presets.length : 0;
+                    const thGlobalTree = [
+                        ...(Array.isArray(extSettings?.tavern_helper?.script?.scripts) ? extSettings.tavern_helper.script.scripts : []),
+                        ...(Array.isArray(extSettings?.TavernHelper?.script?.scriptsRepository) ? extSettings.TavernHelper.script.scriptsRepository : []),
+                    ];
+                    const thGlobalCount = extractTavernHelperScripts(thGlobalTree).length;
+                    const gvarCount = extSettings?.variables?.global && typeof extSettings.variables.global === 'object'
+                        ? Object.keys(extSettings.variables.global).length
+                        : 0;
                     let scopedCount = 0;
                     for (const c of characters) {
                         const arr = c?.data?.extensions?.regex_scripts;
                         if (Array.isArray(arr)) scopedCount += arr.length;
+                        const thChar = c?.data?.extensions?.tavern_helper?.scripts || c?.data?.extensions?.TavernHelper_scripts;
+                        if (Array.isArray(thChar)) scopedCount += extractTavernHelperScripts(thChar).length;
                     }
-                    approx = globalCount + comboCount + scopedCount;
+                    approx = globalCount + comboCount + thGlobalCount + gvarCount + scopedCount;
                     break;
                 }
                 case 'worldinfo': {
@@ -744,6 +875,54 @@ export function createScannerSession(options = {}) {
             }));
         }
 
+        // 2. Standalone Character Expression Sprite Packs (`GET api/sprites/get?name=<dir>`)
+        const spritePackItems = [];
+        await mapWithConcurrency(characters, 5, async (ch) => {
+            if (!ch?.avatar) return;
+            const spriteDirName = stripExt(ch.avatar, '.png');
+            if (!spriteDirName) return;
+            try {
+                const spList = await apiJson(`api/sprites/get?name=${encodeURIComponent(spriteDirName)}`, {
+                    method: 'GET',
+                    signal,
+                    allow404: true,
+                });
+                if (!Array.isArray(spList) || spList.length === 0) return;
+                const parsedSprites = spList
+                    .map(sp => {
+                        const rawFile = String(sp?.path || '').split('?')[0].split('/').pop() || '';
+                        const spriteName = rawFile.replace(/\.[^.]+$/, '');
+                        return { label: String(sp?.label || ''), spriteName };
+                    })
+                    .filter(s => s.label && s.spriteName);
+                if (parsedSprites.length === 0) return;
+
+                const isActive = ch.avatar === activeCharAvatar;
+                const sampleLabels = parsedSprites.slice(0, 5).map(s => s.label).join('、');
+                spritePackItems.push(registerItem({
+                    key: `char_sprites:${ch.avatar}`,
+                    categoryId: 'characters',
+                    subgroupId: 'char_sprites',
+                    title: `${ch.name || spriteDirName} — 专属立绘表情包`,
+                    subtitle: `共 ${parsedSprites.length} 张表情 (${sampleLabels}${parsedSprites.length > 5 ? '...' : ''}) · 仅清理立绘保留角色卡`,
+                    sizeBytes: 0,
+                    isActive,
+                    badges: [
+                        ...(isActive ? [{ text: '正在使用', type: 'active' }] : []),
+                        { text: `${parsedSprites.length} 张立绘`, type: 'muted' },
+                    ],
+                    payload: {
+                        kind: 'char_sprites',
+                        avatar: ch.avatar,
+                        spriteDirName,
+                        sprites: parsedSprites,
+                    },
+                }));
+            } catch {
+                // Non-fatal if sprites endpoint unavailable
+            }
+        }, signal);
+
         const groupItems = [];
         for (const g of groups) {
             if (!g?.id) continue;
@@ -773,6 +952,7 @@ export function createScannerSession(options = {}) {
         if (signal?.aborted) throw new DOMException('Scan aborted', 'AbortError');
         return [
             { id: 'char_cards', label: '角色卡', items: charItems },
+            { id: 'char_sprites', label: '角色立绘表情包', items: spritePackItems },
             { id: 'groups', label: '群聊房间', items: groupItems },
         ];
     }
@@ -1038,11 +1218,151 @@ export function createScannerSession(options = {}) {
             }));
         }
 
+        // 5. TavernHelper (酒馆助手 JS-Slash-Runner) Global Scripts (v4 `tavern_helper` + v3 `TavernHelper`)
+        const thGlobalItems = [];
+        const thGlobalEnabled = extSettings?.tavern_helper?.script?.enabled?.global !== false
+            && extSettings?.TavernHelper?.script?.global_script_enabled !== false;
+        const thGlobalTree = [
+            ...(Array.isArray(extSettings?.tavern_helper?.script?.scripts) ? extSettings.tavern_helper.script.scripts : []),
+            ...(Array.isArray(extSettings?.TavernHelper?.script?.scriptsRepository) ? extSettings.TavernHelper.script.scriptsRepository : []),
+        ];
+        const seenThGlobalIds = new Set();
+        for (const sc of extractTavernHelperScripts(thGlobalTree)) {
+            if (seenThGlobalIds.has(sc.id)) continue;
+            seenThGlobalIds.add(sc.id);
+            const isActive = thGlobalEnabled && sc.folderEnabled && sc.enabled;
+            thGlobalItems.push(registerItem({
+                key: `th:global::${sc.id}`,
+                categoryId: 'regex',
+                subgroupId: 'th_global',
+                title: sc.folderName ? `[${sc.folderName}] ${sc.name}` : sc.name,
+                subtitle: `酒馆助手全局脚本 · ${sc.enabled && sc.folderEnabled ? '启用中' : '已停用'}${sc.info ? ` · ${sc.info.slice(0, 36)}` : ''}`,
+                sizeBytes: 0,
+                isActive,
+                badges: [
+                    ...(isActive ? [{ text: '正在使用', type: 'active' }] : [{ text: '已停用', type: 'muted' }]),
+                    ...(sc.folderName ? [{ text: sc.folderName, type: 'info' }] : []),
+                ],
+                payload: {
+                    kind: 'th_global',
+                    scriptId: sc.id,
+                    scriptName: sc.name,
+                },
+            }));
+        }
+
+        // 6. TavernHelper Character-Scoped Scripts (v4 `data.extensions.tavern_helper.scripts` + v3 `TavernHelper_scripts`)
+        const thCharItems = [];
+        const thEnabledChars = new Set([
+            ...(Array.isArray(extSettings?.tavern_helper?.script?.enabled?.characters) ? extSettings.tavern_helper.script.enabled.characters : []),
+            ...(Array.isArray(extSettings?.TavernHelper?.script?.characters_with_scripts) ? extSettings.TavernHelper.script.characters_with_scripts : []),
+        ]);
+        for (const ch of characters) {
+            if (!ch?.avatar) continue;
+            const rawTree = Array.isArray(ch?.data?.extensions?.tavern_helper?.scripts)
+                ? ch.data.extensions.tavern_helper.scripts
+                : (Array.isArray(ch?.data?.extensions?.TavernHelper_scripts) ? ch.data.extensions.TavernHelper_scripts : null);
+            if (!rawTree || rawTree.length === 0) continue;
+            const parsedList = extractTavernHelperScripts(rawTree);
+            const isCharActive = ch.avatar === activeCharAvatar;
+            const charScriptAllowed = thEnabledChars.size === 0 || thEnabledChars.has(ch.avatar) || thEnabledChars.has(ch.name);
+
+            for (const sc of parsedList) {
+                const isActive = isCharActive && charScriptAllowed && sc.folderEnabled && sc.enabled;
+                thCharItems.push(registerItem({
+                    key: `th:char::${ch.avatar}::${sc.id}`,
+                    categoryId: 'regex',
+                    subgroupId: 'th_char',
+                    title: sc.folderName ? `[${sc.folderName}] ${sc.name}` : sc.name,
+                    subtitle: `所属角色: ${ch.name || ch.avatar} · 酒馆助手局部脚本 · ${sc.enabled ? '启用' : '已停用'}`,
+                    sizeBytes: 0,
+                    isActive,
+                    badges: [
+                        ...(isActive ? [{ text: '正在使用', type: 'active' }] : []),
+                        { text: ch.name || stripExt(ch.avatar, '.png'), type: 'info' },
+                    ],
+                    payload: {
+                        kind: 'th_char',
+                        avatar: ch.avatar,
+                        characterName: ch.name || stripExt(ch.avatar, '.png'),
+                        scriptId: sc.id,
+                        scriptName: sc.name,
+                    },
+                }));
+            }
+        }
+
+        // 7. TavernHelper Preset-Embedded Scripts (`preset.extensions.tavern_helper.scripts`)
+        const thPresetItems = [];
+        const thEnabledPresets = new Set(
+            Array.isArray(extSettings?.tavern_helper?.script?.enabled?.presets) ? extSettings.tavern_helper.script.enabled.presets : [],
+        );
+        const oaiEntries = presetSources[0]?.entries || [];
+        for (const presetEntry of oaiEntries) {
+            const rawTree = presetEntry.data?.extensions?.tavern_helper?.scripts;
+            if (!Array.isArray(rawTree) || rawTree.length === 0) continue;
+            const parsedList = extractTavernHelperScripts(rawTree);
+            const isPresetActive = presetEntry.name === activeOaiPreset;
+            const presetAllowed = thEnabledPresets.size === 0 || thEnabledPresets.has(presetEntry.name);
+            for (const sc of parsedList) {
+                const isActive = isPresetActive && presetAllowed && sc.folderEnabled && sc.enabled;
+                thPresetItems.push(registerItem({
+                    key: `th:preset::openai:${presetEntry.name}::${sc.id}`,
+                    categoryId: 'regex',
+                    subgroupId: 'th_preset',
+                    title: sc.folderName ? `[${sc.folderName}] ${sc.name}` : sc.name,
+                    subtitle: `所属聊天预设: ${presetEntry.name} · 酒馆助手预设脚本 · ${sc.enabled ? '启用' : '已停用'}`,
+                    sizeBytes: 0,
+                    isActive,
+                    badges: [
+                        ...(isActive ? [{ text: '正在使用', type: 'active' }] : []),
+                        { text: presetEntry.name, type: 'info' },
+                    ],
+                    payload: {
+                        kind: 'th_preset',
+                        apiId: 'openai',
+                        presetName: presetEntry.name,
+                        presetData: presetEntry.data,
+                        scriptId: sc.id,
+                        scriptName: sc.name,
+                    },
+                }));
+            }
+        }
+
+        // 8. Persistent ST Global Script Variables (`extension_settings.variables.global`)
+        const globalVarItems = [];
+        const globalVarsObj = extSettings?.variables?.global;
+        if (globalVarsObj && typeof globalVarsObj === 'object') {
+            for (const [varKey, rawVal] of Object.entries(globalVarsObj)) {
+                if (!varKey) continue;
+                const valStr = typeof rawVal === 'object' ? JSON.stringify(rawVal) : String(rawVal ?? '');
+                globalVarItems.push(registerItem({
+                    key: `gvar:${varKey}`,
+                    categoryId: 'regex',
+                    subgroupId: 'global_vars',
+                    title: varKey,
+                    subtitle: `STscript 全局持久变量 · 值预览: ${valStr.slice(0, 48)}${valStr.length > 48 ? '...' : ''}`,
+                    sizeBytes: valStr.length,
+                    isActive: false,
+                    badges: [{ text: '全局变量', type: 'muted' }],
+                    payload: {
+                        kind: 'global_var',
+                        varKey,
+                    },
+                }));
+            }
+        }
+
         return [
             { id: 'regex_global', label: '全局正则', items: globalItems },
             { id: 'regex_scoped', label: '角色局部正则', items: scopedItems },
             { id: 'regex_preset', label: '预设内嵌正则', items: presetRegexItems },
             { id: 'regex_combos', label: '正则预设组合', items: comboItems },
+            { id: 'th_global', label: '酒馆助手全局脚本', items: thGlobalItems },
+            { id: 'th_char', label: '酒馆助手角色脚本', items: thCharItems },
+            { id: 'th_preset', label: '酒馆助手预设脚本', items: thPresetItems },
+            { id: 'global_vars', label: 'ST 全局脚本变量', items: globalVarItems },
         ];
     }
 
@@ -1551,7 +1871,80 @@ export function createScannerSession(options = {}) {
             }, signal);
         }
 
-        // 4. Character Tags
+        // 4. Built-in User Audio Assets (`POST api/assets/get` -> bgm / ambient / blip)
+        const assetItems = [];
+        const assetsMap = await apiJson('api/assets/get', {
+            method: 'POST',
+            body: {},
+            signal,
+            allow404: true,
+        }).catch(() => ({}));
+        if (assetsMap && typeof assetsMap === 'object' && !assetsMap.__notFound) {
+            const assetCats = [
+                { key: 'bgm', label: '背景音乐 BGM' },
+                { key: 'ambient', label: '环境音效 Ambient' },
+                { key: 'blip', label: '对话音效 Blip' },
+            ];
+            for (const ac of assetCats) {
+                const list = assetsMap[ac.key];
+                if (!Array.isArray(list)) continue;
+                for (const rel of list) {
+                    const fileName = String(rel || '').replace(/\\/g, '/').split('/').pop() || '';
+                    if (!fileName || fileName === '.placeholder') continue;
+                    assetItems.push(registerItem({
+                        key: `asset:${ac.key}::${fileName}`,
+                        categoryId: 'media',
+                        subgroupId: 'user_assets',
+                        title: fileName,
+                        subtitle: `${ac.label} · 路径: assets/${ac.key}/${fileName}`,
+                        sizeBytes: 0,
+                        isActive: false,
+                        badges: [{ text: ac.key.toUpperCase(), type: 'muted' }],
+                        payload: {
+                            kind: 'user_asset',
+                            category: ac.key,
+                            filename: fileName,
+                        },
+                    }));
+                }
+            }
+        }
+
+        // 5. Custom ComfyUI Workflows (`POST api/sd/comfy/workflows`)
+        const workflowItems = [];
+        const workflows = await apiJson('api/sd/comfy/workflows', {
+            method: 'POST',
+            body: {},
+            signal,
+            allow404: true,
+        }).catch(() => []);
+        if (Array.isArray(workflows)) {
+            const activeWorkflow = String(extSettings?.sd?.comfy_workflow || '');
+            for (const wf of workflows) {
+                const fileName = String(wf || '').trim();
+                if (!fileName || BUILTIN_COMFY_WORKFLOWS.has(fileName)) continue;
+                const isActive = fileName === activeWorkflow;
+                workflowItems.push(registerItem({
+                    key: `workflow:${fileName}`,
+                    categoryId: 'media',
+                    subgroupId: 'comfy_workflows',
+                    title: stripExt(fileName, '.json'),
+                    subtitle: `ComfyUI 工作流 · 文件: user/workflows/${fileName}`,
+                    sizeBytes: 0,
+                    isActive,
+                    badges: [
+                        ...(isActive ? [{ text: '正在使用', type: 'active' }] : []),
+                        { text: 'ComfyUI', type: 'muted' },
+                    ],
+                    payload: {
+                        kind: 'comfy_workflow',
+                        fileName,
+                    },
+                }));
+            }
+        }
+
+        // 6. Character Tags
         const tags = Array.isArray(ctx?.tags) ? ctx.tags : [];
         const tagMap = ctx?.tagMap || ctx?.tag_map || {};
         const tagRefCounts = new Map();
@@ -1586,6 +1979,8 @@ export function createScannerSession(options = {}) {
             { id: 'quick_replies', label: '快捷回复集', items: qrItems },
             { id: 'databank', label: '资料库附件', items: databankItems },
             { id: 'gallery_images', label: '画廊与聊天图片', items: galleryItems },
+            { id: 'user_assets', label: '音效与环境音资产', items: assetItems },
+            { id: 'comfy_workflows', label: 'ComfyUI 生图工作流', items: workflowItems },
             { id: 'tags', label: '角色标签', items: tagItems },
         ];
     }
