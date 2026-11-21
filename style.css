@@ -1048,22 +1048,35 @@
   background: var(--stc-bg-subtle);
 }
 
+.st-cleaner-api-info {
+  flex: 1;
+  min-width: 0;
+}
+
 .st-cleaner-api-name {
   font-size: 12.5px;
   font-weight: 600;
   color: var(--stc-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .st-cleaner-api-meta {
   font-size: 11.5px;
   color: var(--stc-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .st-cleaner-api-right {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   font-size: 12.5px;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 /* ==========================================================================
@@ -2279,6 +2292,7 @@
   .st-cleaner-root {
     padding: 0;
     align-items: flex-end;
+    touch-action: manipulation;
   }
   .st-cleaner-modal {
     width: 100vw;
@@ -2290,14 +2304,20 @@
   .st-cleaner-sidebar {
     display: none;
   }
+  .st-cleaner-overview,
+  .st-cleaner-vlist-viewport,
+  .st-cleaner-sheet-body {
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
 
   /* Row 1: Top Header with Title + Utility / Close Buttons */
   .st-cleaner-header {
-    padding: 14px 16px 10px;
-    gap: 10px;
+    padding: 12px 14px 8px;
+    gap: 8px;
   }
   .st-cleaner-page-title {
-    font-size: 18px;
+    font-size: 17.5px;
   }
   .st-cleaner-page-sub {
     font-size: 11.5px;
@@ -2314,7 +2334,8 @@
     align-items: center;
     gap: 6px;
     overflow-x: auto;
-    padding: 0 16px 10px;
+    padding: 0 14px 9px;
+    scroll-padding-inline: 14px;
     border-bottom: 1px solid var(--stc-border);
     flex-shrink: 0;
     scrollbar-width: none;
@@ -2324,7 +2345,7 @@
     display: none;
   }
   .st-cleaner-cat-pill {
-    height: 31px;
+    height: 32px;
     padding: 0 12px;
     border-radius: 999px;
     background: var(--stc-bg-subtle) !important;
@@ -2350,50 +2371,115 @@
     font-weight: 700;
   }
 
-  /* Overview Content */
+  /* Overview Content: Compact Bento Cards so Diagnostics Center peeks above the fold */
   .st-cleaner-overview {
-    padding: 12px 14px 16px;
-    gap: 14px;
+    padding: 10px 14px 16px;
+    gap: 11px;
   }
   .st-cleaner-bento-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 9px;
+    gap: 8px;
   }
   .st-cleaner-bento-tile {
-    padding: 12px 13px;
+    padding: 10px 11px;
+    gap: 6px;
+    border-radius: 13px;
+  }
+  .st-cleaner-tile-icon {
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    font-size: 12.5px;
+  }
+  .st-cleaner-tile-bignum {
+    font-size: 18px;
+  }
+  .st-cleaner-tile-title {
+    font-size: 13px;
+  }
+  .st-cleaner-tile-desc {
+    font-size: 11px;
+  }
+
+  /* Diagnostics Panel: Clean Stacked Mobile Header + Full-Width 3-Tab Segmented Control */
+  .st-cleaner-stats-panel {
+    padding: 12px;
     gap: 10px;
     border-radius: 14px;
   }
-  .st-cleaner-tile-icon {
-    width: 30px;
-    height: 30px;
+  .st-cleaner-stats-head {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 9px;
+  }
+  .st-cleaner-stats-title-group {
+    width: 100%;
+    gap: 6px;
+  }
+  .st-cleaner-health-pill {
+    font-size: 11.5px;
+    padding: 3px 9px;
+  }
+  .st-cleaner-stats-heading {
     font-size: 13px;
   }
-  .st-cleaner-tile-bignum {
-    font-size: 19px;
+  .st-cleaner-diag-controls {
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
   }
-  .st-cleaner-tile-title {
-    font-size: 13.5px;
+  .st-cleaner-diag-tabs {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    padding: 3px;
+    border-radius: 10px;
   }
-  .st-cleaner-stats-panel {
-    padding: 13px 14px;
+  .st-cleaner-diag-tab {
+    height: 32px;
+    padding: 0 4px;
+    justify-content: center;
+    font-size: 11.5px !important;
+  }
+  .st-cleaner-deep-btn {
+    width: 100%;
+    height: 36px;
+    justify-content: center;
+    border-radius: 10px;
+    font-size: 12.5px !important;
+  }
+  .st-cleaner-phase-strip {
+    gap: 5px;
+  }
+  .st-cleaner-phase-pill {
+    font-size: 11px;
+    padding: 3px 8px;
   }
 
   /* Workspace Toolbar & List */
   .st-cleaner-workspace {
-    padding: 10px 14px 0;
+    padding: 8px 14px 0;
   }
   .st-cleaner-toolbar {
-    gap: 8px;
+    gap: 7px;
     padding-bottom: 8px;
   }
   .st-cleaner-search-row {
     flex-wrap: wrap;
-    gap: 8px;
+    gap: 7px;
   }
   .st-cleaner-search-box {
     flex: 1 1 100%;
     min-width: 0;
+  }
+  /* Prevent iOS Safari auto-zoom on focus (16px font threshold) */
+  .st-cleaner-search-input {
+    height: 38px !important;
+    font-size: 16px !important;
+  }
+  .st-cleaner-search-input::placeholder {
+    font-size: 13px;
   }
   .st-cleaner-sort-wrap {
     flex: 1 1 auto;
@@ -2402,45 +2488,70 @@
   .st-cleaner-sort-select {
     width: 100% !important;
     max-width: none;
-    height: 30px !important;
-    font-size: 11.5px !important;
+    height: 34px !important;
+    font-size: 13px !important;
+    padding: 0 26px 0 9px !important;
   }
   .st-cleaner-bulk-btns {
     width: auto;
     margin-left: auto;
     justify-content: flex-end;
+    gap: 6px;
   }
   .st-cleaner-btn-ghost {
-    height: 30px;
+    height: 34px;
     padding: 0 10px;
     font-size: 12px !important;
   }
+  .st-cleaner-subpills,
+  .st-cleaner-facetbar {
+    scroll-padding-inline: 8px;
+  }
+  .st-cleaner-subpill {
+    height: 29px;
+    padding: 0 11px;
+  }
+  .st-cleaner-facetpill {
+    height: 26px;
+    padding: 0 9px;
+  }
   .st-cleaner-vitem-row {
     padding: 0 8px;
-    gap: 10px;
+    gap: 9px;
+  }
+  .st-cleaner-check {
+    width: 20px;
+    height: 20px;
+    font-size: 11px;
+  }
+  .st-cleaner-more-btn {
+    width: 34px;
+    height: 34px;
   }
   .st-cleaner-badge {
-    max-width: 88px;
+    max-width: 92px;
     padding: 0 6px;
     font-size: 10.5px;
   }
 
-  /* Structured 2-Row Mobile Footer (Zero Ragged Wrapping) */
+  /* Structured 2-Row Mobile Footer (Zero Ragged Wrapping Even at 360px) */
   .st-cleaner-footer {
     flex-direction: column;
     align-items: stretch;
-    gap: 9px;
-    padding: 10px 14px calc(10px + env(safe-area-inset-bottom, 0px));
+    gap: 8px;
+    padding: 9px 14px calc(10px + env(safe-area-inset-bottom, 0px));
   }
   .st-cleaner-footer-left {
     width: 100%;
     justify-content: space-between;
     flex-wrap: nowrap;
-    gap: 8px;
+    gap: 6px;
   }
   .st-cleaner-selected-summary {
+    flex: 0 1 auto;
     min-width: 0;
-    max-width: 58%;
+    padding: 5px 10px;
+    font-size: 12px !important;
   }
   .st-cleaner-selected-summary span[data-ref="selected-count-text"] {
     white-space: nowrap;
@@ -2448,9 +2559,10 @@
     text-overflow: ellipsis;
   }
   .st-cleaner-skip-toggle {
-    font-size: 12px;
-    gap: 6px;
+    font-size: 11.5px;
+    gap: 5px;
     flex-shrink: 0;
+    white-space: nowrap;
   }
   .st-cleaner-footer-right {
     width: 100%;
@@ -2459,9 +2571,10 @@
   }
   .st-cleaner-footer-right .st-cleaner-primary-btn {
     flex: 1;
+    height: 40px;
   }
 
-  /* Bottom-Docked Confirmation Sheet on Mobile */
+  /* Bottom-Docked Native-Feel Confirmation Sheet on Mobile */
   .st-cleaner-sheet-mask {
     padding: 0;
     align-items: flex-end;
@@ -2472,37 +2585,58 @@
     max-height: 88dvh;
     border-radius: 20px 20px 0 0;
     border-bottom: none;
+    position: relative;
+  }
+  .st-cleaner-sheet::before {
+    content: '';
+    display: block;
+    width: 38px;
+    height: 4px;
+    border-radius: 999px;
+    background: var(--stc-border-strong);
+    margin: 8px auto 0;
+    flex-shrink: 0;
   }
   .st-cleaner-sheet-head {
-    padding: 15px 16px 12px;
+    padding: 10px 16px 12px;
   }
   .st-cleaner-sheet-body {
-    padding: 14px 16px;
+    padding: 12px 16px;
   }
   .st-cleaner-sheet-foot {
-    padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px));
+    padding: 10px 14px calc(12px + env(safe-area-inset-bottom, 0px));
     gap: 6px;
   }
-  .st-cleaner-sheet-foot .st-cleaner-danger-btn {
+  .st-cleaner-sheet-foot .st-cleaner-btn-ghost,
+  .st-cleaner-sheet-foot .st-cleaner-btn-secondary {
+    height: 38px;
+    padding: 0 12px;
+    flex-shrink: 0;
+  }
+  .st-cleaner-sheet-foot .st-cleaner-danger-btn,
+  .st-cleaner-sheet-foot .st-cleaner-primary-btn {
     flex: 1;
+    height: 38px;
     padding: 0 12px;
   }
 }
 
-/* Narrow Phones (<= 560px): Protect Item Title Readability & Compact Subtitle */
+/* Narrow Phones (<= 560px): Protect Item Title Readability & Always Keep Critical Badge */
 @media (max-width: 560px) {
   .st-cleaner-page-sub {
     display: none;
   }
-  /* Keep primary status badge + more button; hide secondary badges so titles never crush */
-  .st-cleaner-item-right .st-cleaner-badge:nth-of-type(n+2) {
+  /* Keep primary badge AND any critical foundation badge; hide non-critical secondary badges */
+  .st-cleaner-item-right .st-cleaner-badge:not(.st-cleaner-badge-critical):nth-of-type(n+2) {
     display: none;
   }
   .st-cleaner-finding-row {
     flex-wrap: wrap;
+    padding: 9px 10px;
   }
   .st-cleaner-finding-btn {
     width: 100%;
+    height: 32px;
     justify-content: center;
   }
 }
@@ -2524,18 +2658,21 @@
   .st-cleaner-bento-tile:last-child:nth-child(odd) .st-cleaner-tile-bottom {
     order: 2;
   }
+  .st-cleaner-footer-left {
+    flex-wrap: wrap;
+  }
 }
 
 /* Mobile Landscape / Short Split Windows (Height <= 560px) */
 @media (max-height: 560px) {
   .st-cleaner-root {
-    padding: 6px;
+    padding: 3px 6px;
     align-items: center;
   }
   .st-cleaner-modal {
-    height: 96dvh;
-    max-height: 96dvh;
-    border-radius: 16px;
+    height: 98dvh;
+    max-height: 98dvh;
+    border-radius: 14px;
   }
   .st-cleaner-sidebar {
     padding: 10px 10px;
@@ -2547,48 +2684,110 @@
     display: none;
   }
   .st-cleaner-header {
-    padding: 8px 16px;
+    padding: 5px 14px;
   }
   .st-cleaner-page-title {
-    font-size: 16.5px;
+    font-size: 15.5px;
+  }
+  .st-cleaner-icon-btn {
+    width: 28px;
+    height: 28px;
   }
   .st-cleaner-mobile-cats {
-    padding: 0 14px 6px;
+    padding: 0 14px 5px;
+  }
+  .st-cleaner-cat-pill {
+    height: 26px;
+    padding: 0 10px;
+    font-size: 11.5px !important;
+  }
+  .st-cleaner-workspace {
+    padding: 5px 14px 0;
   }
   .st-cleaner-toolbar {
-    gap: 6px;
-    padding-bottom: 6px;
+    gap: 4px;
+    padding-bottom: 5px;
   }
   .st-cleaner-search-row {
     flex-wrap: nowrap;
+    gap: 6px;
   }
   .st-cleaner-search-box {
     flex: 1 1 auto;
+    min-width: 120px;
+  }
+  .st-cleaner-sort-wrap {
+    flex: 0 0 132px;
+  }
+  .st-cleaner-sort-select {
+    height: 28px !important;
+    font-size: 11.5px !important;
   }
   .st-cleaner-bulk-btns {
     width: auto;
+    margin-left: 0;
+    flex-shrink: 0;
+  }
+  .st-cleaner-btn-ghost {
+    height: 28px;
+    padding: 0 8px;
+    font-size: 11.5px !important;
   }
   .st-cleaner-search-input {
-    height: 32px !important;
+    height: 28px !important;
+    font-size: 13px !important;
+  }
+  .st-cleaner-subpill {
+    height: 24px;
+    padding: 0 9px;
+    font-size: 11px !important;
+  }
+  .st-cleaner-facetpill {
+    height: 22px;
+    padding: 0 8px;
+    font-size: 10.5px !important;
   }
   .st-cleaner-footer {
     flex-direction: row;
     align-items: center;
-    padding: 7px 16px;
+    padding: 5px 14px;
     gap: 10px;
   }
   .st-cleaner-footer-left {
     width: auto;
+    flex: 1 1 auto;
+    justify-content: flex-start;
+    gap: 10px;
   }
   .st-cleaner-footer-right {
     width: auto;
+    flex-shrink: 0;
   }
   .st-cleaner-footer-right .st-cleaner-primary-btn {
     flex: 0 0 auto;
+    height: 30px;
   }
   .st-cleaner-btn-secondary,
   .st-cleaner-primary-btn {
-    height: 32px;
+    height: 30px;
     padding: 0 12px;
+    font-size: 12px !important;
+  }
+  .st-cleaner-stats-head {
+    flex-direction: row;
+    align-items: center;
+  }
+  .st-cleaner-diag-controls {
+    width: auto;
+    flex-direction: row;
+    align-items: center;
+  }
+  .st-cleaner-diag-tabs {
+    width: auto;
+    display: inline-flex;
+  }
+  .st-cleaner-deep-btn {
+    width: auto;
+    height: 28px;
   }
 }
