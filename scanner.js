@@ -132,24 +132,80 @@ export const CATEGORY_DEFS = [
     },
 ];
 
-const DEFAULT_BUILTIN_PRESET_NAMES = new Set([
-    'Default',
-    'Default (ChatML)',
-    'Roleplay',
-    'Alpaca',
-    'ChatML',
-    'Vicuna',
-    'Llama 3',
-    'Command R',
-    'Mistral',
-    'Metharme',
-    'DeepSeek',
-    'Qwen',
-    'Claude',
-    'NovelAI Default',
-    'Universal-Light',
-    'SimpleProxyForTavern',
+export const HARD_PROTECTED_BACKGROUNDS = new Set([
+    '__transparent.png',
 ]);
+
+export const OFFICIAL_BUILTIN_THEMES = new Set([
+    'Dark Lite',
+    'Cappuccino',
+    'Celestial Macaron',
+    'Dark V 1.0',
+    'Azure',
+]);
+
+export const OFFICIAL_BUILTIN_BACKGROUNDS = new Set([
+    '__transparent.png',
+    '_black.jpg',
+    '_white.jpg',
+    'bedroom clean.jpg',
+    'bedroom cyberpunk.jpg',
+    'bedroom red.jpg',
+    'bedroom tatami.jpg',
+    'cityscape medieval market.jpg',
+    'cityscape medieval night.jpg',
+    'cityscape postapoc.jpg',
+    'forest treehouse fireworks air baloons (by kallmeflocc).jpg',
+    'japan classroom side.jpg',
+    'japan classroom.jpg',
+    'japan path cherry blossom.jpg',
+    'japan university.jpg',
+    'landscape autumn great tree.jpg',
+    'landscape beach day.png',
+    'landscape beach night.jpg',
+    'landscape mountain lake.jpg',
+    'landscape postapoc.jpg',
+    'landscape winter lake house.jpg',
+    'royal.jpg',
+    'tavern day.jpg',
+]);
+
+export const OFFICIAL_BUILTIN_PRESET_NAMES = new Set([
+    'Default', 'Blank', 'Deterministic', 'Neutral', 'RecoveredRuins',
+    'Universal-Creative', 'Universal-Light', 'Universal-Super-Creative',
+    'Asper-Kayra', 'Blended-Coffee-Kayra', 'Blook-Kayra', 'Carefree-Kayra',
+    'CosmicCube-Kayra', 'Edgewise-Clio', 'Fresh-Coffee-Clio', 'Fresh-Coffee-Kayra',
+    'Green-Active-Writer-Kayra', 'Keelback-Clio', 'Long-Press-Clio', 'Pilotfish-Kayra',
+    'Pro_Writer-Kayra', 'Stelenes-Kayra', 'Talker-Chat-Clio', 'Tea_Time-Kayra',
+    'Tesseract-Kayra', 'Vingt-Un-Clio', 'Writers-Daemon-Kayra', 'Erato-Dragonfruit',
+    'Erato-Golden Arrow', 'Erato-Shosetsu', 'Erato-Wilder', 'Erato-Zany Scribe',
+    'Adventure', 'Alpaca-Single-Turn', 'Alpaca', 'ChatML', 'ChatML-Names',
+    'Libra-32B', 'Lightning 1.1', 'Llama 2 Chat', 'Llama 3 Instruct', 'Llama 4 Instruct',
+    'Llama-3-Instruct-Names', 'Minimalist', 'NovelAI', 'OldDefault', 'Metharme',
+    'Story', 'Synthia', 'simple-proxy-for-tavern', 'Command R', 'Phi', 'Tulu',
+    'Koala', 'OpenOrca-OpenChat', 'Vicuna 1.0', 'Vicuna 1.1', 'WizardLM-13B',
+    'WizardLM', 'KoboldAI', 'Gemma 2', 'Gemma 4', 'Mistral V1', 'Mistral V2 & V3',
+    'Mistral V3-Tekken', 'Mistral V7', 'Mistral V7-Tekken', 'DeepSeek-V2.5', 'DeepSeek',
+    'GLM-4', 'Dots1', 'Moonshot AI', 'OpenAI Harmony', 'OpenAI Harmony (Thinking)',
+    'Think XML', 'Actor', 'Assistant - Expert', 'Assistant - Simple', 'Chain of Thought',
+    'Roleplay - Detailed', 'Roleplay - Immersive', 'Roleplay - Simple', 'Text Adventure',
+    'Writer - Creative', 'Writer - Realistic', 'Neutral - Chat',
+]);
+
+export const CORE_ECOSYSTEM_EXT_PATTERNS = [
+    { match: /js-slash-runner|tavern[-_]?helper|酒馆助手/i, label: '酒馆助手核心底座' },
+    { match: /st-prompt-template|prompt[-_]?template/i, label: '提示词模板核心底座' },
+    { match: /littlewhitebox|xiaobaix|小白/i, label: '小白X前端渲染底座' },
+    { match: /memory[-_]?books/i, label: '记忆书总结核心扩展' },
+];
+
+export function matchCoreEcosystemExt(extName) {
+    const s = String(extName || '');
+    for (const entry of CORE_ECOSYSTEM_EXT_PATTERNS) {
+        if (entry.match.test(s)) return entry.label;
+    }
+    return '';
+}
 
 let cachedHostModulesPromise = null;
 
@@ -258,11 +314,100 @@ export function parseBackgroundsPayload(payload) {
             filename = String(entry.filename ?? entry.name ?? entry.bg ?? '').trim();
             isAnimated = Boolean(entry.isAnimated);
         }
-        if (!filename || seen.has(filename)) continue;
+        if (!filename || HARD_PROTECTED_BACKGROUNDS.has(filename) || seen.has(filename)) continue;
         seen.add(filename);
         out.push({ filename, isAnimated });
     }
     return out;
+}
+
+/**
+ * Parses SillyTavern's varied timestamp formats into epoch milliseconds (or 0 if unavailable):
+ * - numeric ms / s (`1732190000000` / `1732190000`)
+ * - ST date strings (`"2026-11-20 @12h05m00s"`, `"2026-11-20@12h05m00s"`, `"November 20, 2026"`)
+ * - Filename date prefixes/suffixes (`"2026-11-20@塔罗会.jsonl"`, `"chat_klein_20261119.jsonl"`)
+ * @param {any} raw
+ * @param {string} [fallbackText]
+ * @returns {number}
+ */
+export function parseTavernTimestamp(raw, fallbackText = '') {
+    if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) {
+        return raw < 1e11 ? Math.round(raw * 1000) : Math.round(raw);
+    }
+    const candidates = [];
+    if (raw !== undefined && raw !== null && raw !== '') candidates.push(String(raw).trim());
+    if (fallbackText) candidates.push(String(fallbackText).trim());
+
+    for (const str of candidates) {
+        if (!str) continue;
+        if (/^\d{10,13}$/.test(str)) {
+            const n = Number(str);
+            return str.length === 10 ? n * 1000 : n;
+        }
+        // Match YYYY-MM-DD with optional @HHhMMmSSs
+        const stMatch = str.match(/(\d{4})-(\d{1,2})-(\d{1,2})(?:[\s@T_-]*(\d{1,2})[h:](\d{1,2})(?:[m:](\d{1,2}))?)?/);
+        if (stMatch) {
+            const y = Number(stMatch[1]);
+            const m = Number(stMatch[2]) - 1;
+            const d = Number(stMatch[3]);
+            const hh = Number(stMatch[4] || 0);
+            const mm = Number(stMatch[5] || 0);
+            const ss = Number(stMatch[6] || 0);
+            const ts = Date.UTC(y, m, d, hh, mm, ss);
+            if (Number.isFinite(ts) && ts > 0) return ts;
+        }
+        // Match compact YYYYMMDD (e.g. backup filename `chat_name_20261119_120000.jsonl`)
+        const compactMatch = str.match(/(?:^|[^\d])(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?:[_-]?(\d{2})(\d{2})(\d{2})?)?/);
+        if (compactMatch) {
+            const ts = Date.UTC(
+                Number(compactMatch[1]),
+                Number(compactMatch[2]) - 1,
+                Number(compactMatch[3]),
+                Number(compactMatch[4] || 0),
+                Number(compactMatch[5] || 0),
+                Number(compactMatch[6] || 0),
+            );
+            if (Number.isFinite(ts) && ts > 0) return ts;
+        }
+        const parsed = Date.parse(str);
+        if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    }
+    return 0;
+}
+
+/**
+ * Parses human-readable file size strings like `"14.2 KB"`, `"1.5 MB"`, `"820 B"` into bytes.
+ * @param {any} raw
+ * @returns {number}
+ */
+export function parseSizeStringBytes(raw) {
+    if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) return Math.round(raw);
+    const s = String(raw || '').trim();
+    if (!s) return 0;
+    const m = s.match(/^([\d.]+)\s*(b|kb|mb|gb)?$/i);
+    if (!m) return 0;
+    const val = Number(m[1]);
+    if (!Number.isFinite(val)) return 0;
+    const unit = (m[2] || 'b').toLowerCase();
+    if (unit === 'gb') return Math.round(val * 1024 * 1024 * 1024);
+    if (unit === 'mb') return Math.round(val * 1024 * 1024);
+    if (unit === 'kb') return Math.round(val * 1024);
+    return Math.round(val);
+}
+
+export function formatShortDate(ms) {
+    const n = Number(ms) || 0;
+    if (n <= 0) return '';
+    try {
+        const d = new Date(n);
+        if (Number.isNaN(d.getTime())) return '';
+        const yyyy = d.getFullYear();
+        const mm = String(d.getMonth() + 1).padStart(2, '0');
+        const dd = String(d.getDate()).padStart(2, '0');
+        return `${yyyy}-${mm}-${dd}`;
+    } catch {
+        return '';
+    }
 }
 
 /**
@@ -700,9 +845,23 @@ export function createScannerSession(options = {}) {
         return characters;
     }
 
+    let scanOrderCounter = 0;
+
     function registerItem(item) {
-        whitelistMap.set(item.key, item);
-        return item;
+        const sizeBytes = Math.max(0, Number(item.sizeBytes) || 0);
+        const normalized = {
+            ...item,
+            sizeBytes,
+            sortTimeMs: Math.max(0, Number(item.sortTimeMs) || 0),
+            sortMetric: Number.isFinite(Number(item.sortMetric)) ? Number(item.sortMetric) : sizeBytes,
+            scanOrder: scanOrderCounter++,
+            isCritical: Boolean(item.isCritical),
+            criticalReason: String(item.criticalReason || ''),
+            isCaution: Boolean(item.isCaution),
+            facets: Array.isArray(item.facets) ? item.facets : [],
+        };
+        whitelistMap.set(normalized.key, normalized);
+        return normalized;
     }
 
     function unregisterCategoryKeys(categoryId) {
@@ -714,21 +873,31 @@ export function createScannerSession(options = {}) {
     }
 
     /**
-     * Collects all worldbook binding relationships across global, characters, and personas.
+     * Collects all worldbook binding relationships across global, characters, personas, and active chat.
      */
     function collectWorldInfoBindings(ctx, hostMods) {
-        /** @type {Map<string, string[]>} worldName -> human-readable bound targets */
+        /** @type {Map<string, { labels: string[], scopes: Set<string>, tagIds: Set<any> }>} */
         const bindings = new Map();
-        const addBinding = (worldName, label) => {
+        const tagMap = ctx?.tagMap || ctx?.tag_map || {};
+
+        const addBinding = (worldName, label, scope, charAvatar = '') => {
             const name = String(worldName || '').trim();
             if (!name) return;
-            let arr = bindings.get(name);
-            if (!arr) {
-                arr = [];
-                bindings.set(name, arr);
+            let rec = bindings.get(name);
+            if (!rec) {
+                rec = { labels: [], scopes: new Set(), tagIds: new Set() };
+                bindings.set(name, rec);
             }
-            if (!arr.includes(label)) {
-                arr.push(label);
+            if (!rec.labels.includes(label)) {
+                rec.labels.push(label);
+            }
+            if (scope) {
+                rec.scopes.add(scope);
+            }
+            if (charAvatar && Array.isArray(tagMap[charAvatar])) {
+                for (const tid of tagMap[charAvatar]) {
+                    rec.tagIds.add(tid);
+                }
             }
         };
 
@@ -739,15 +908,18 @@ export function createScannerSession(options = {}) {
             || [];
         if (Array.isArray(globalWorlds)) {
             for (const w of globalWorlds) {
-                addBinding(w, '全局启用');
+                addBinding(w, '全局启用', 'wi:global');
             }
         }
 
         const characters = Array.isArray(ctx?.characters) ? ctx.characters : [];
+        const charAvatarByName = new Map();
         for (const ch of characters) {
+            if (ch?.name && ch?.avatar) charAvatarByName.set(ch.name, ch.avatar);
+            if (ch?.avatar) charAvatarByName.set(stripExt(ch.avatar, '.png'), ch.avatar);
             const primary = ch?.data?.extensions?.world;
             if (primary) {
-                addBinding(primary, `角色主世界书:${ch.name || ch.avatar}`);
+                addBinding(primary, `角色主世界书:${ch.name || ch.avatar}`, 'wi:char_primary', ch.avatar || '');
             }
         }
 
@@ -759,24 +931,30 @@ export function createScannerSession(options = {}) {
         if (Array.isArray(charLore)) {
             for (const entry of charLore) {
                 const targetName = entry?.name || '角色附加';
+                const linkedAvatar = charAvatarByName.get(targetName) || '';
                 const books = Array.isArray(entry?.extraBooks) ? entry.extraBooks : [];
                 for (const b of books) {
-                    addBinding(b, `角色附加:${targetName}`);
+                    addBinding(b, `角色附加:${targetName}`, 'wi:char_extra', linkedAvatar);
                 }
             }
         }
 
         const powerUser = ctx?.powerUserSettings || ctx?.power_user || {};
         if (powerUser.persona_description_lorebook) {
-            addBinding(powerUser.persona_description_lorebook, '当前人设世界书');
+            addBinding(powerUser.persona_description_lorebook, '当前人设世界书', 'wi:persona_chat');
         }
         if (powerUser.persona_descriptions && typeof powerUser.persona_descriptions === 'object') {
             for (const [avatar, desc] of Object.entries(powerUser.persona_descriptions)) {
                 if (desc?.lorebook) {
                     const pName = powerUser.personas?.[avatar] || avatar;
-                    addBinding(desc.lorebook, `人设:${pName}`);
+                    addBinding(desc.lorebook, `人设:${pName}`, 'wi:persona_chat');
                 }
             }
+        }
+
+        const chatMeta = ctx?.chatMetadata || ctx?.chat_metadata || {};
+        if (chatMeta?.world_info) {
+            addBinding(chatMeta.world_info, '当前会话世界书', 'wi:persona_chat');
         }
 
         return bindings;
@@ -919,29 +1097,58 @@ export function createScannerSession(options = {}) {
         for (const ch of characters) {
             if (!ch?.avatar) continue;
             const inGroups = groups.filter(g => Array.isArray(g?.members) && g.members.includes(ch.avatar));
-            const tagIds = Array.isArray(tagMap[ch.avatar]) ? tagMap[ch.avatar] : [];
-            const tagLabels = tagIds.map(id => tagsById.get(id)).filter(Boolean);
+            const rawTagIds = Array.isArray(tagMap[ch.avatar]) ? tagMap[ch.avatar] : [];
+            const validTagIds = rawTagIds.filter(id => tagsById.has(id));
+            const tagLabels = validTagIds.map(id => tagsById.get(id)).filter(Boolean);
             const worldName = ch?.data?.extensions?.world || '';
             const scopedRegexCount = Array.isArray(ch?.data?.extensions?.regex_scripts) ? ch.data.extensions.regex_scripts.length : 0;
+            const isFav = Boolean(ch.fav === true || ch.fav === 'true' || ch?.data?.extensions?.fav === true);
+            const isBuiltin = ch.avatar === 'default_Seraphina.png';
+            const sortTimeMs = parseTavernTimestamp(
+                ch.date_last_chat || ch.date_added || ch.create_date,
+                ch.chat || '',
+            );
+            const dateLabel = formatShortDate(sortTimeMs);
+            const chatSizeBytes = Number(ch.chat_size) || Number(ch.data_size) || 0;
 
             const subtitleParts = [ch.avatar];
+            if (isFav) subtitleParts.push('★ 星标收藏');
+            if (dateLabel) subtitleParts.push(`互动:${dateLabel}`);
             if (inGroups.length > 0) subtitleParts.push(`关联 ${inGroups.length} 个群聊`);
             if (worldName) subtitleParts.push(`世界书:${worldName}`);
             if (scopedRegexCount > 0) subtitleParts.push(`局部正则:${scopedRegexCount}`);
-            if (tagLabels.length > 0) subtitleParts.push(`标签:${tagLabels.slice(0, 3).join('/')}`);
+            if (tagLabels.length > 0) subtitleParts.push(`标签:${tagLabels.slice(0, 4).join('/')}`);
 
             const isActive = ch.avatar === activeCharAvatar;
+            const facets = [isBuiltin ? 'src:builtin' : 'src:user'];
+            if (isFav) facets.push('char:fav');
+            if (inGroups.length > 0) facets.push('char:ingroup');
+            if (!isActive && !isFav && inGroups.length === 0) facets.push('char:idle');
+            if (validTagIds.length > 0) {
+                for (const tid of validTagIds) facets.push(`tag:${tid}`);
+            } else {
+                facets.push('tag:__untagged__');
+            }
+
             charItems.push(registerItem({
                 key: `char_card:${ch.avatar}`,
                 categoryId: 'characters',
                 subgroupId: 'char_cards',
                 title: String(ch.name || stripExt(ch.avatar, '.png')),
                 subtitle: subtitleParts.join(' · '),
-                sizeBytes: Number(ch.chat_size) || 0,
+                sizeBytes: chatSizeBytes,
+                sortTimeMs,
+                sortMetric: chatSizeBytes || (inGroups.length + scopedRegexCount),
                 isActive,
+                isCaution: isFav,
+                facets,
                 badges: [
                     ...(isActive ? [{ text: '正在使用', type: 'active' }] : []),
+                    ...(isFav ? [{ text: '★ 收藏', type: 'fav' }] : []),
+                    ...(isBuiltin ? [{ text: '官方自带', type: 'builtin' }] : []),
                     ...(inGroups.length > 0 ? [{ text: `群成员×${inGroups.length}`, type: 'info' }] : []),
+                    ...tagLabels.slice(0, 2).map(t => ({ text: `#${t}`, type: 'tag' })),
+                    ...(tagLabels.length > 2 ? [{ text: `+${tagLabels.length - 2}`, type: 'muted' }] : []),
                 ],
                 payload: {
                     kind: 'char_card',
@@ -975,6 +1182,11 @@ export function createScannerSession(options = {}) {
                 if (parsedSprites.length === 0) return;
 
                 const isActive = ch.avatar === activeCharAvatar;
+                const rawTagIds = Array.isArray(tagMap[ch.avatar]) ? tagMap[ch.avatar] : [];
+                const validTagIds = rawTagIds.filter(id => tagsById.has(id));
+                const spFacets = ['src:user'];
+                for (const tid of validTagIds) spFacets.push(`tag:${tid}`);
+
                 const sampleLabels = parsedSprites.slice(0, 5).map(s => s.label).join('、');
                 spritePackItems.push(registerItem({
                     key: `char_sprites:${ch.avatar}`,
@@ -983,7 +1195,10 @@ export function createScannerSession(options = {}) {
                     title: `${ch.name || spriteDirName} — 专属立绘表情包`,
                     subtitle: `共 ${parsedSprites.length} 张表情 (${sampleLabels}${parsedSprites.length > 5 ? '...' : ''}) · 仅清理立绘保留角色卡`,
                     sizeBytes: 0,
+                    sortTimeMs: parseTavernTimestamp(ch.date_last_chat || ch.date_added || ch.create_date),
+                    sortMetric: parsedSprites.length,
                     isActive,
+                    facets: spFacets,
                     badges: [
                         ...(isActive ? [{ text: '正在使用', type: 'active' }] : []),
                         { text: `${parsedSprites.length} 张立绘`, type: 'muted' },
@@ -1006,6 +1221,7 @@ export function createScannerSession(options = {}) {
             const memberCount = Array.isArray(g.members) ? g.members.length : 0;
             const chatCount = Array.isArray(g.chats) ? g.chats.length : 0;
             const isActive = String(g.id) === String(activeGroupId);
+            const isFav = Boolean(g.fav === true || g.fav === 'true');
             groupItems.push(registerItem({
                 key: `group:${g.id}`,
                 categoryId: 'characters',
@@ -1013,9 +1229,14 @@ export function createScannerSession(options = {}) {
                 title: String(g.name || `群聊 ${g.id}`),
                 subtitle: `ID: ${g.id} · ${memberCount} 位成员 · ${chatCount} 条会话`,
                 sizeBytes: 0,
+                sortTimeMs: parseTavernTimestamp(g.date_last_chat || g.date_added, g.chat_id || ''),
+                sortMetric: chatCount * 10 + memberCount,
                 isActive,
+                isCaution: isFav,
+                facets: ['src:user', ...(isFav ? ['char:fav'] : [])],
                 badges: [
                     ...(isActive ? [{ text: '正在使用', type: 'active' }] : []),
+                    ...(isFav ? [{ text: '★ 收藏', type: 'fav' }] : []),
                     { text: `${chatCount} 会话`, type: 'muted' },
                 ],
                 payload: {
@@ -1043,6 +1264,12 @@ export function createScannerSession(options = {}) {
             : -1;
         const activeChar = activeCharIndex >= 0 ? characters[activeCharIndex] : null;
         const activeGroupId = ctx?.groupId ?? ctx?.selected_group ?? null;
+        const tagMap = ctx?.tagMap || ctx?.tag_map || {};
+        const validTagIdSet = new Set(
+            (Array.isArray(ctx?.tags) ? ctx.tags : [])
+                .filter(t => t && t.id !== undefined && t.id !== null)
+                .map(t => t.id),
+        );
 
         const charChatItems = [];
         let scannedChars = 0;
@@ -1057,24 +1284,43 @@ export function createScannerSession(options = {}) {
                 });
                 if (Array.isArray(list)) {
                     const activeChatBase = activeChar?.avatar === ch.avatar ? stripExt(activeChar?.chat || '', '.jsonl') : '';
+                    const charDefaultBase = stripExt(ch?.chat || '', '.jsonl');
+                    const charTagIds = (Array.isArray(tagMap[ch.avatar]) ? tagMap[ch.avatar] : []).filter(id => validTagIdSet.has(id));
                     for (const info of list) {
                         const fileName = String(info?.file_name || '').trim();
                         if (!fileName) continue;
                         const baseName = stripExt(fileName, '.jsonl');
                         const isActive = Boolean(activeChatBase && baseName === activeChatBase);
+                        const isCharDefault = Boolean(charDefaultBase && baseName === charDefaultBase);
                         const msgCount = info?.chat_items ?? info?.mes_count ?? '';
+                        const numericMsgs = msgCount !== '' ? Number(msgCount) : NaN;
+                        const isShortTest = Number.isFinite(numericMsgs) && numericMsgs <= 2;
                         const lastMes = info?.last_mes ? ` · 最近: ${String(info.last_mes).slice(0, 24)}` : '';
                         const sizeText = info?.file_size ? ` · ${info.file_size}` : '';
+
+                        const chatFacets = [isCharDefault ? 'chat:current_default' : 'chat:branch'];
+                        if (isShortTest) chatFacets.push('chat:short_test');
+                        for (const tid of charTagIds) chatFacets.push(`tag:${tid}`);
+
+                        const parsedBytes = parseSizeStringBytes(info?.file_size);
+                        const sortTimeMs = parseTavernTimestamp(info?.last_mes, fileName);
+
                         charChatItems.push(registerItem({
                             key: `char_chat:${ch.avatar}::${fileName}`,
                             categoryId: 'chats',
                             subgroupId: 'char_chats',
                             title: `${ch.name || stripExt(ch.avatar, '.png')} — ${baseName}`,
                             subtitle: `角色: ${ch.name || ch.avatar}${msgCount !== '' ? ` · ${msgCount} 条消息` : ''}${sizeText}${lastMes}`,
-                            sizeBytes: 0,
+                            sizeBytes: parsedBytes,
+                            sortTimeMs,
+                            sortMetric: Number.isFinite(numericMsgs) ? numericMsgs * 1024 + parsedBytes : parsedBytes,
                             isActive,
+                            facets: chatFacets,
                             badges: [
-                                ...(isActive ? [{ text: '正在使用', type: 'active' }] : []),
+                                ...(isActive
+                                    ? [{ text: '正在使用', type: 'active' }]
+                                    : (isCharDefault ? [{ text: '角色主会话', type: 'info' }] : [{ text: '历史分支', type: 'muted' }])),
+                                ...(isShortTest ? [{ text: '短测试档', type: 'warn' }] : []),
                                 { text: ch.name || stripExt(ch.avatar, '.png'), type: 'muted' },
                             ],
                             payload: {
@@ -1103,7 +1349,8 @@ export function createScannerSession(options = {}) {
             for (const chatId of g.chats) {
                 const cid = String(chatId || '').trim();
                 if (!cid) continue;
-                const isActive = isGroupSelected && String(g.chat_id) === cid;
+                const isGroupDefault = String(g.chat_id) === cid;
+                const isActive = isGroupSelected && isGroupDefault;
                 groupChatItems.push(registerItem({
                     key: `group_chat:${g.id}::${cid}`,
                     categoryId: 'chats',
@@ -1111,9 +1358,13 @@ export function createScannerSession(options = {}) {
                     title: `${g.name || g.id} — ${cid}`,
                     subtitle: `所属群聊: ${g.name || g.id} · 会话 ID: ${cid}`,
                     sizeBytes: 0,
+                    sortTimeMs: parseTavernTimestamp(cid),
                     isActive,
+                    facets: [isGroupDefault ? 'chat:current_default' : 'chat:branch'],
                     badges: [
-                        ...(isActive ? [{ text: '正在使用', type: 'active' }] : []),
+                        ...(isActive
+                            ? [{ text: '正在使用', type: 'active' }]
+                            : (isGroupDefault ? [{ text: '群聊主会话', type: 'info' }] : [{ text: '历史分支', type: 'muted' }])),
                         { text: g.name || String(g.id), type: 'muted' },
                     ],
                     payload: {
@@ -1159,6 +1410,7 @@ export function createScannerSession(options = {}) {
                 subtitle: `全局正则 · ${disabled ? '已停用' : '启用中'}${script.findRegex ? ` · 匹配: ${String(script.findRegex).slice(0, 40)}` : ''}`,
                 sizeBytes: 0,
                 isActive: !disabled,
+                facets: [disabled ? 'rx:disabled' : 'rx:enabled', 'rx:st_regex'],
                 badges: [
                     ...(!disabled ? [{ text: '正在使用', type: 'active' }] : [{ text: '已停用', type: 'muted' }]),
                 ],
@@ -1191,8 +1443,9 @@ export function createScannerSession(options = {}) {
                     subtitle: `所属角色: ${ch.name || ch.avatar} · ${disabled ? '已停用' : '启用'}`,
                     sizeBytes: 0,
                     isActive,
+                    facets: [disabled ? 'rx:disabled' : 'rx:enabled', 'rx:st_regex'],
                     badges: [
-                        ...(isActive ? [{ text: '正在使用', type: 'active' }] : []),
+                        ...(isActive ? [{ text: '正在使用', type: 'active' }] : (disabled ? [{ text: '已停用', type: 'muted' }] : [])),
                         { text: ch.name || stripExt(ch.avatar, '.png'), type: 'info' },
                     ],
                     payload: {
@@ -1247,8 +1500,9 @@ export function createScannerSession(options = {}) {
                         subtitle: `所属${src.apiLabel}: ${presetEntry.name} · ${disabled ? '已停用' : '启用'}`,
                         sizeBytes: 0,
                         isActive,
+                        facets: [disabled ? 'rx:disabled' : 'rx:enabled', 'rx:st_regex'],
                         badges: [
-                            ...(isActive ? [{ text: '正在使用', type: 'active' }] : []),
+                            ...(isActive ? [{ text: '正在使用', type: 'active' }] : (disabled ? [{ text: '已停用', type: 'muted' }] : [])),
                             { text: presetEntry.name, type: 'info' },
                         ],
                         payload: {
@@ -1283,6 +1537,7 @@ export function createScannerSession(options = {}) {
                 subtitle: `仅删除开关组合方案（不删脚本本体） · 记录 ${refCount} 项脚本状态`,
                 sizeBytes: 0,
                 isActive,
+                facets: ['rx:vars_combos'],
                 badges: [
                     ...(isActive ? [{ text: '正在使用', type: 'active' }] : []),
                     { text: '开关方案', type: 'muted' },
@@ -1307,15 +1562,21 @@ export function createScannerSession(options = {}) {
         for (const sc of extractTavernHelperScripts(thGlobalTree)) {
             if (seenThGlobalIds.has(sc.id)) continue;
             seenThGlobalIds.add(sc.id);
-            const isActive = thGlobalEnabled && sc.folderEnabled && sc.enabled;
+            const isEnabled = sc.folderEnabled && sc.enabled;
+            const isActive = thGlobalEnabled && isEnabled;
             thGlobalItems.push(registerItem({
                 key: `th:global::${sc.id}`,
                 categoryId: 'regex',
                 subgroupId: 'th_global',
                 title: sc.folderName ? `[${sc.folderName}] ${sc.name}` : sc.name,
-                subtitle: `酒馆助手全局脚本 · ${sc.enabled && sc.folderEnabled ? '启用中' : '已停用'}${sc.info ? ` · ${sc.info.slice(0, 36)}` : ''}`,
+                subtitle: `酒馆助手全局脚本 · ${isEnabled ? '启用中' : '已停用'}${sc.info ? ` · ${sc.info.slice(0, 36)}` : ''}`,
                 sizeBytes: 0,
                 isActive,
+                facets: [
+                    isEnabled ? 'rx:enabled' : 'rx:disabled',
+                    'rx:tavern_helper',
+                    ...(sc.folderName ? ['rx:folder'] : []),
+                ],
                 badges: [
                     ...(isActive ? [{ text: '正在使用', type: 'active' }] : [{ text: '已停用', type: 'muted' }]),
                     ...(sc.folderName ? [{ text: sc.folderName, type: 'info' }] : []),
@@ -1345,17 +1606,23 @@ export function createScannerSession(options = {}) {
             const charScriptAllowed = thEnabledChars.size === 0 || thEnabledChars.has(ch.avatar) || thEnabledChars.has(ch.name);
 
             for (const sc of parsedList) {
-                const isActive = isCharActive && charScriptAllowed && sc.folderEnabled && sc.enabled;
+                const isEnabled = sc.folderEnabled && sc.enabled;
+                const isActive = isCharActive && charScriptAllowed && isEnabled;
                 thCharItems.push(registerItem({
                     key: `th:char::${ch.avatar}::${sc.id}`,
                     categoryId: 'regex',
                     subgroupId: 'th_char',
                     title: sc.folderName ? `[${sc.folderName}] ${sc.name}` : sc.name,
-                    subtitle: `所属角色: ${ch.name || ch.avatar} · 酒馆助手局部脚本 · ${sc.enabled ? '启用' : '已停用'}`,
+                    subtitle: `所属角色: ${ch.name || ch.avatar} · 酒馆助手局部脚本 · ${isEnabled ? '启用' : '已停用'}`,
                     sizeBytes: 0,
                     isActive,
+                    facets: [
+                        isEnabled ? 'rx:enabled' : 'rx:disabled',
+                        'rx:tavern_helper',
+                        ...(sc.folderName ? ['rx:folder'] : []),
+                    ],
                     badges: [
-                        ...(isActive ? [{ text: '正在使用', type: 'active' }] : []),
+                        ...(isActive ? [{ text: '正在使用', type: 'active' }] : (!isEnabled ? [{ text: '已停用', type: 'muted' }] : [])),
                         { text: ch.name || stripExt(ch.avatar, '.png'), type: 'info' },
                     ],
                     payload: {
@@ -1382,17 +1649,23 @@ export function createScannerSession(options = {}) {
             const isPresetActive = presetEntry.name === activeOaiPreset;
             const presetAllowed = thEnabledPresets.size === 0 || thEnabledPresets.has(presetEntry.name);
             for (const sc of parsedList) {
-                const isActive = isPresetActive && presetAllowed && sc.folderEnabled && sc.enabled;
+                const isEnabled = sc.folderEnabled && sc.enabled;
+                const isActive = isPresetActive && presetAllowed && isEnabled;
                 thPresetItems.push(registerItem({
                     key: `th:preset::openai:${presetEntry.name}::${sc.id}`,
                     categoryId: 'regex',
                     subgroupId: 'th_preset',
                     title: sc.folderName ? `[${sc.folderName}] ${sc.name}` : sc.name,
-                    subtitle: `所属聊天预设: ${presetEntry.name} · 酒馆助手预设脚本 · ${sc.enabled ? '启用' : '已停用'}`,
+                    subtitle: `所属聊天预设: ${presetEntry.name} · 酒馆助手预设脚本 · ${isEnabled ? '启用' : '已停用'}`,
                     sizeBytes: 0,
                     isActive,
+                    facets: [
+                        isEnabled ? 'rx:enabled' : 'rx:disabled',
+                        'rx:tavern_helper',
+                        ...(sc.folderName ? ['rx:folder'] : []),
+                    ],
                     badges: [
-                        ...(isActive ? [{ text: '正在使用', type: 'active' }] : []),
+                        ...(isActive ? [{ text: '正在使用', type: 'active' }] : (!isEnabled ? [{ text: '已停用', type: 'muted' }] : [])),
                         { text: presetEntry.name, type: 'info' },
                     ],
                     payload: {
@@ -1429,6 +1702,7 @@ export function createScannerSession(options = {}) {
                     subtitle: `STscript 全局持久变量 · 值预览: ${valStr.slice(0, 48)}${valStr.length > 48 ? '...' : ''}`,
                     sizeBytes: valStr.length,
                     isActive: false,
+                    facets: ['rx:vars_combos'],
                     badges: [{ text: '全局变量', type: 'muted' }],
                     payload: {
                         kind: 'global_var',
@@ -1462,6 +1736,12 @@ export function createScannerSession(options = {}) {
             ? Number(ctx.characterId)
             : -1;
         const activeChar = activeCharIndex >= 0 ? characters[activeCharIndex] : null;
+        const tagMap = ctx?.tagMap || ctx?.tag_map || {};
+        const validTagIdSet = new Set(
+            (Array.isArray(ctx?.tags) ? ctx.tags : [])
+                .filter(t => t && t.id !== undefined && t.id !== null)
+                .map(t => t.id),
+        );
 
         const liveWorldNames = hostMods?.worldInfo?.world_names;
         const rawNames = Array.isArray(liveWorldNames) && liveWorldNames.length > 0
@@ -1483,7 +1763,9 @@ export function createScannerSession(options = {}) {
         const unboundItems = [];
         const boundItems = [];
         for (const name of worldNames) {
-            const boundTargets = bindings.get(name) || [];
+            const bindRec = bindings.get(name);
+            const boundTargets = bindRec ? bindRec.labels : [];
+            const isBuiltin = name === 'Eldoria';
             const isActive = globalActiveSet.has(name) || name === activeCharWorld;
             if (boundTargets.length === 0) {
                 unboundItems.push(registerItem({
@@ -1491,10 +1773,14 @@ export function createScannerSession(options = {}) {
                     categoryId: 'worldinfo',
                     subgroupId: 'wi_unbound',
                     title: name,
-                    subtitle: '独立世界书 · 未被全局/角色/人设绑定（闲置可安全清理）',
+                    subtitle: `独立世界书 · 未被全局/角色/人设绑定（闲置可安全清理）${isBuiltin ? ' · 酒馆官方示例世界书' : ''}`,
                     sizeBytes: 0,
                     isActive: false,
-                    badges: [{ text: '未绑定', type: 'muted' }],
+                    facets: [isBuiltin ? 'src:builtin' : 'src:user', 'wi:unbound'],
+                    badges: [
+                        { text: '未绑定', type: 'muted' },
+                        ...(isBuiltin ? [{ text: '官方自带', type: 'builtin' }] : []),
+                    ],
                     payload: {
                         kind: 'wi_standalone',
                         name,
@@ -1502,6 +1788,14 @@ export function createScannerSession(options = {}) {
                     },
                 }));
             } else {
+                const scopeFacets = [...bindRec.scopes];
+                const tagFacets = [...bindRec.tagIds].filter(id => validTagIdSet.has(id)).map(id => `tag:${id}`);
+                const scopeBadges = [];
+                if (bindRec.scopes.has('wi:global')) scopeBadges.push({ text: '全局启用', type: 'info' });
+                if (bindRec.scopes.has('wi:char_primary')) scopeBadges.push({ text: '角色主书', type: 'info' });
+                if (bindRec.scopes.has('wi:char_extra')) scopeBadges.push({ text: '角色附加', type: 'muted' });
+                if (bindRec.scopes.has('wi:persona_chat')) scopeBadges.push({ text: '人设/会话', type: 'muted' });
+
                 boundItems.push(registerItem({
                     key: `wi:standalone::${name}`,
                     categoryId: 'worldinfo',
@@ -1509,10 +1803,15 @@ export function createScannerSession(options = {}) {
                     title: name,
                     subtitle: `已绑定至: ${boundTargets.join('、')}`,
                     sizeBytes: 0,
+                    sortMetric: boundTargets.length,
                     isActive,
+                    isCaution: true,
+                    facets: [isBuiltin ? 'src:builtin' : 'src:user', ...scopeFacets, ...tagFacets],
                     badges: [
                         ...(isActive ? [{ text: '正在使用', type: 'active' }] : []),
                         { text: `绑定×${boundTargets.length}`, type: 'warn' },
+                        ...scopeBadges.slice(0, 2),
+                        ...(isBuiltin ? [{ text: '官方自带', type: 'builtin' }] : []),
                     ],
                     payload: {
                         kind: 'wi_standalone',
@@ -1529,10 +1828,13 @@ export function createScannerSession(options = {}) {
             const book = ch?.data?.character_book;
             const entries = Array.isArray(book?.entries)
                 ? book.entries
-                : (book?.entries && typeof book.entries === 'object' ? Object.values(book.entries) : []);
+                : (book?.entries && typeof book?.entries === 'object' ? Object.values(book.entries) : []);
             if (!book || entries.length === 0) continue;
 
             const isActive = activeChar?.avatar === ch.avatar;
+            const charTagFacets = (Array.isArray(tagMap[ch.avatar]) ? tagMap[ch.avatar] : [])
+                .filter(id => validTagIdSet.has(id))
+                .map(id => `tag:${id}`);
             embeddedItems.push(registerItem({
                 key: `wi:embedded::${ch.avatar}`,
                 categoryId: 'worldinfo',
@@ -1540,7 +1842,10 @@ export function createScannerSession(options = {}) {
                 title: `${ch.name || stripExt(ch.avatar, '.png')} — 内嵌世界书${book.name ? ` (${book.name})` : ''}`,
                 subtitle: `清空角色卡内嵌 character_book（保留角色卡与聊天记录） · 共 ${entries.length} 条目`,
                 sizeBytes: 0,
+                sortTimeMs: parseTavernTimestamp(ch.date_last_chat || ch.date_added || ch.create_date),
+                sortMetric: entries.length,
                 isActive,
+                facets: ['src:user', 'wi:embedded', ...charTagFacets],
                 badges: [
                     ...(isActive ? [{ text: '正在使用', type: 'active' }] : []),
                     { text: `${entries.length} 条目`, type: 'info' },
@@ -1627,23 +1932,48 @@ export function createScannerSession(options = {}) {
         ];
 
         return presetBuckets.map((bucket) => {
+            const validEntries = bucket.list.filter(e => e?.name && e.name !== 'gui');
             const items = [];
-            for (const entry of bucket.list) {
-                if (!entry.name || entry.name === 'gui') continue;
+            for (const entry of validEntries) {
                 const isActive = Boolean(bucket.activeName && entry.name === bucket.activeName);
-                const isDefaultRestorable = DEFAULT_BUILTIN_PRESET_NAMES.has(entry.name);
-                const fallbackItem = bucket.list.find(x => x.name && x.name !== 'gui' && x.name !== entry.name);
+                const isBuiltin = OFFICIAL_BUILTIN_PRESET_NAMES.has(entry.name);
+                const isDefaultAnchor = (
+                    ((bucket.apiId === 'openai' || bucket.apiId === 'textgenerationwebui' || bucket.apiId === 'context') && entry.name === 'Default')
+                    || ((bucket.apiId === 'sysprompt' || bucket.apiId === 'reasoning') && (entry.name === 'Blank' || entry.name === 'Default'))
+                    || (bucket.apiId === 'openai' && validEntries.length === 1)
+                );
+                const fallbackItem = validEntries.find(x => x.name !== entry.name);
+                const criticalReason = isDefaultAnchor
+                    ? `该引擎核心兜底预设（全部删空会导致预设面板/导出异常，且重启酒馆不会自动重建）`
+                    : '';
+
+                let subtitle = `${bucket.label} (${bucket.apiId})`;
+                if (isDefaultAnchor) {
+                    subtitle += ' · ⚠️ 核心兜底预设（删后重启酒馆不会自动重建）';
+                } else if (isBuiltin) {
+                    subtitle += ' · 酒馆官方初始模板（删后重启不会自动恢复）';
+                } else {
+                    subtitle += ' · 用户自建/导入预设';
+                }
+
+                const facets = [isBuiltin ? 'src:builtin' : 'src:user'];
+                if (isDefaultAnchor) facets.push('crit:essential');
+
                 items.push(registerItem({
                     key: `preset:${bucket.apiId}::${entry.name}`,
                     categoryId: 'presets',
                     subgroupId: bucket.subgroupId,
                     title: entry.name,
-                    subtitle: `${bucket.label} (${bucket.apiId})${isDefaultRestorable ? ' · 默认模板（重启酒馆后可能自动恢复副本）' : ''}`,
+                    subtitle,
                     sizeBytes: 0,
                     isActive,
+                    isCritical: isDefaultAnchor,
+                    criticalReason,
+                    facets,
                     badges: [
                         ...(isActive ? [{ text: '正在使用', type: 'active' }] : []),
-                        ...(isDefaultRestorable ? [{ text: '默认可恢复', type: 'muted' }] : []),
+                        ...(isDefaultAnchor ? [{ text: '⚠️ 核心底座', type: 'critical' }] : []),
+                        ...(isBuiltin ? [{ text: '官方自带', type: 'builtin' }] : [{ text: '用户自建', type: 'user' }]),
                     ],
                     payload: {
                         kind: 'preset',
@@ -1679,22 +2009,27 @@ export function createScannerSession(options = {}) {
                 p.model ? `模型:${p.model}` : '',
                 p['api-url'] ? `地址:${p['api-url']}` : '',
             ].filter(Boolean);
+            const apiTag = p.api ? `api:${String(p.api).toLowerCase()}` : '';
             items.push(registerItem({
                 key: `profile:${p.id}`,
                 categoryId: 'profiles',
                 subgroupId: 'conn_profiles',
                 title: String(p.name || p.id),
-                subtitle: details.length > 0 ? `${details.join(' · ')}（不动 secrets.json 密钥）` : `ID: ${p.id}（不动 secrets.json 密钥）`,
+                subtitle: `${details.length > 0 ? details.join(' · ') : `ID: ${p.id}`} · ⚠️ 删后移除反代地址与模型绑定（不动 secrets.json 密钥）`,
                 sizeBytes: 0,
                 isActive,
+                isCaution: true,
+                facets: ['src:user', ...(apiTag ? [apiTag] : [])],
                 badges: [
                     ...(isActive ? [{ text: '正在使用', type: 'active' }] : []),
+                    { text: '⚠️ 含连接地址', type: 'warn' },
                     ...(p.api ? [{ text: String(p.api), type: 'info' }] : []),
                 ],
                 payload: {
                     kind: 'conn_profile',
                     id: p.id,
                     name: String(p.name || p.id),
+                    apiLabel: p.api ? String(p.api) : '',
                 },
             }));
         }
@@ -1731,17 +2066,30 @@ export function createScannerSession(options = {}) {
             const lorebook = descObj?.lorebook ? ` · 绑定世界书:${descObj.lorebook}` : '';
             const isActive = avatarFile === activePersona;
             const isDefault = avatarFile === defaultPersona;
+            const isBuiltin = avatarFile === 'user-default.png';
+            const isCritical = isBuiltin || isDefault;
+            const criticalReason = isBuiltin
+                ? '官方默认用户人设底座（删后无回退头像且重启酒馆不会自动恢复）'
+                : (isDefault ? '当前设为默认人设（建议先切换默认人设再清理）' : '');
+            const pFacets = [isBuiltin ? 'src:builtin' : 'src:user'];
+            if (isCritical) pFacets.push('crit:essential');
+
             personaItems.push(registerItem({
                 key: `persona:${avatarFile}`,
                 categoryId: 'personas',
                 subgroupId: 'user_personas',
                 title: `${alias} (${avatarFile})`,
-                subtitle: `人设头像: ${avatarFile}${isDefault ? ' · 默认人设' : ''}${lorebook}`,
+                subtitle: `人设头像: ${avatarFile}${isDefault ? ' · 默认人设' : ''}${isBuiltin ? ' · ⚠️ 官方人设底座' : ''}${lorebook}`,
                 sizeBytes: 0,
                 isActive,
+                isCritical,
+                criticalReason,
+                facets: pFacets,
                 badges: [
                     ...(isActive ? [{ text: '正在使用', type: 'active' }] : []),
+                    ...(isCritical ? [{ text: '⚠️ 核心底座', type: 'critical' }] : []),
                     ...(isDefault ? [{ text: '默认人设', type: 'warn' }] : []),
+                    ...(isBuiltin ? [{ text: '官方自带', type: 'builtin' }] : [{ text: '用户自建', type: 'user' }]),
                 ],
                 payload: {
                     kind: 'user_persona',
@@ -1761,17 +2109,23 @@ export function createScannerSession(options = {}) {
         const bgItems = [];
         for (const bg of parsedBgs) {
             const isActive = Boolean(activeBgRaw && (activeBgRaw === bg.filename || activeBgRaw.includes(bg.filename)));
+            const isBuiltin = OFFICIAL_BUILTIN_BACKGROUNDS.has(bg.filename);
             bgItems.push(registerItem({
                 key: `bg:${bg.filename}`,
                 categoryId: 'personas',
                 subgroupId: 'backgrounds',
                 title: bg.filename,
-                subtitle: bg.isAnimated ? '动态视频/动图背景' : '静态背景图片',
+                subtitle: `${bg.isAnimated ? '动态视频/动图背景' : '静态背景图片'}${isBuiltin ? ' · 酒馆官方自带背景（删后重启不会自动恢复）' : ' · 用户上传背景'}`,
                 sizeBytes: 0,
                 isActive,
+                facets: [
+                    isBuiltin ? 'src:builtin' : 'src:user',
+                    bg.isAnimated ? 'bg:animated' : 'bg:static',
+                ],
                 badges: [
                     ...(isActive ? [{ text: '正在使用', type: 'active' }] : []),
                     ...(bg.isAnimated ? [{ text: '动态', type: 'info' }] : []),
+                    ...(isBuiltin ? [{ text: '官方自带', type: 'builtin' }] : [{ text: '用户上传', type: 'user' }]),
                 ],
                 payload: {
                     kind: 'background',
@@ -1788,16 +2142,29 @@ export function createScannerSession(options = {}) {
             const name = typeof th === 'string' ? th : th?.name;
             if (!name) continue;
             const isActive = name === activeTheme;
+            const isBuiltin = OFFICIAL_BUILTIN_THEMES.has(name);
+            const isCritical = name === 'Dark Lite';
+            const criticalReason = isCritical
+                ? '酒馆基础兜底主题（全部主题删空后配色下拉框为空且重启不会自动恢复）'
+                : '';
+            const tFacets = [isBuiltin ? 'src:builtin' : 'src:user'];
+            if (isCritical) tFacets.push('crit:essential');
+
             themeItems.push(registerItem({
                 key: `theme:${name}`,
                 categoryId: 'personas',
                 subgroupId: 'themes',
                 title: name,
-                subtitle: '自定义界面配色主题 (.json)',
+                subtitle: `${isCritical ? '⚠️ 酒馆基础兜底配色主题' : (isBuiltin ? '酒馆官方自带配色主题' : '用户自定义配色主题')} (.json)`,
                 sizeBytes: 0,
                 isActive,
+                isCritical,
+                criticalReason,
+                facets: tFacets,
                 badges: [
                     ...(isActive ? [{ text: '正在使用', type: 'active' }] : []),
+                    ...(isCritical ? [{ text: '⚠️ 核心底座', type: 'critical' }] : []),
+                    ...(isBuiltin ? [{ text: '官方自带', type: 'builtin' }] : [{ text: '用户自建', type: 'user' }]),
                 ],
                 payload: {
                     kind: 'theme',
@@ -1841,16 +2208,27 @@ export function createScannerSession(options = {}) {
             if (!name) continue;
             const count = Array.isArray(qr?.qrList) ? qr.qrList.length : 0;
             const isActive = activeQrNames.has(name);
+            const isBuiltin = name === 'Default';
+            const isCritical = name === 'Default';
+            const qrFacets = [isBuiltin ? 'src:builtin' : 'src:user'];
+            if (isCritical) qrFacets.push('crit:essential');
+
             qrItems.push(registerItem({
                 key: `qr:${name}`,
                 categoryId: 'media',
                 subgroupId: 'quick_replies',
                 title: name,
-                subtitle: `快捷回复集 · ${count} 条动作按钮`,
+                subtitle: `快捷回复集 · ${count} 条动作按钮${isCritical ? ' · ⚠️ 官方默认快捷回复底座' : ''}`,
                 sizeBytes: 0,
+                sortMetric: count,
                 isActive,
+                isCritical,
+                criticalReason: isCritical ? '官方默认快捷回复底座（删后重启酒馆不会自动恢复）' : '',
+                facets: qrFacets,
                 badges: [
                     ...(isActive ? [{ text: '正在使用', type: 'active' }] : []),
+                    ...(isCritical ? [{ text: '⚠️ 核心底座', type: 'critical' }] : []),
+                    ...(isBuiltin ? [{ text: '官方自带', type: 'builtin' }] : []),
                     { text: `${count} 条`, type: 'muted' },
                 ],
                 payload: {
@@ -1876,7 +2254,9 @@ export function createScannerSession(options = {}) {
                 title: String(att.name || baseName),
                 subtitle: `${ownerLabel} · 文件: ${baseName}${att.size ? ` · ${Math.max(1, Math.round(Number(att.size) / 1024))} KB` : ''}`,
                 sizeBytes: Number(att.size) || 0,
+                sortTimeMs: parseTavernTimestamp(att.created),
                 isActive,
+                facets: ['src:user'],
                 badges: [
                     ...(isActive ? [{ text: '正在使用', type: 'active' }] : []),
                     { text: scope === 'global' ? '全局资料库' : (scope === 'character' ? '角色资料库' : '当前会话'), type: 'info' },
@@ -1941,7 +2321,8 @@ export function createScannerSession(options = {}) {
                                 subtitle: `画廊目录: ${folder} · 路径: ${relPath}`,
                                 sizeBytes: 0,
                                 isActive: false,
-                                badges: [{ text: folder, type: 'muted' }],
+                                facets: ['src:user', `folder:${folder}`],
+                                badges: [{ text: `📁 ${folder}`, type: 'muted' }],
                                 payload: {
                                     kind: 'gallery_image',
                                     folder,
@@ -1987,6 +2368,7 @@ export function createScannerSession(options = {}) {
                         subtitle: `${ac.label} · 路径: assets/${ac.key}/${fileName}`,
                         sizeBytes: 0,
                         isActive: false,
+                        facets: ['src:user'],
                         badges: [{ text: ac.key.toUpperCase(), type: 'muted' }],
                         payload: {
                             kind: 'user_asset',
@@ -2020,6 +2402,7 @@ export function createScannerSession(options = {}) {
                     subtitle: `ComfyUI 工作流 · 文件: user/workflows/${fileName}`,
                     sizeBytes: 0,
                     isActive,
+                    facets: ['src:user'],
                     badges: [
                         ...(isActive ? [{ text: '正在使用', type: 'active' }] : []),
                         { text: 'ComfyUI', type: 'muted' },
@@ -2053,8 +2436,10 @@ export function createScannerSession(options = {}) {
                 title: String(tag.name || tag.id),
                 subtitle: `仅移除标签定义与绑定（绝不删除所属 ${refs} 张角色卡）`,
                 sizeBytes: 0,
+                sortMetric: refs,
                 isActive: false,
-                badges: [{ text: `关联 ${refs} 角色`, type: refs > 0 ? 'info' : 'muted' }],
+                facets: ['src:user', refs === 0 ? 'tag_state:empty' : 'tag_state:used'],
+                badges: [{ text: refs > 0 ? `关联 ${refs} 角色` : '空置无角色', type: refs > 0 ? 'info' : 'muted' }],
                 payload: {
                     kind: 'tag',
                     id: tag.id,
@@ -2097,16 +2482,29 @@ export function createScannerSession(options = {}) {
                     continue; // Non-admin cannot delete global extensions
                 }
                 const isDisabled = disabledExtensions.has(rawName) || disabledExtensions.has(`third-party/${strippedName}`);
+                const coreEcoLabel = matchCoreEcosystemExt(strippedName);
+                const isCritical = Boolean(coreEcoLabel);
+                const criticalReason = coreEcoLabel
+                    ? `${coreEcoLabel}（大量角色卡前端状态栏、脚本与提示词变量强依赖此扩展，卸载后将大面积失效）`
+                    : '';
+
+                const extFacets = [isDisabled ? 'ext:disabled' : 'ext:enabled'];
+                if (isCritical) extFacets.push('crit:essential');
+
                 extItems.push(registerItem({
                     key: `ext:${isGlobal ? 'global' : 'local'}::${strippedName}`,
                     categoryId: 'extensions',
                     subgroupId: 'third_party_ext',
                     title: strippedName,
-                    subtitle: `${isGlobal ? '全局第三方扩展 (global)' : '当前账号第三方扩展 (local)'} · ${isDisabled ? '已禁用' : '已启用'}`,
+                    subtitle: `${isGlobal ? '全局第三方扩展 (global)' : '当前账号第三方扩展 (local)'} · ${isDisabled ? '已禁用' : '已启用'}${coreEcoLabel ? ` · ⚠️ ${coreEcoLabel}` : ''}`,
                     sizeBytes: 0,
                     isActive: !isDisabled,
+                    isCritical,
+                    criticalReason,
+                    facets: extFacets,
                     badges: [
                         ...(!isDisabled ? [{ text: '正在使用', type: 'active' }] : [{ text: '已禁用', type: 'muted' }]),
+                        ...(isCritical ? [{ text: '⚠️ 核心底座', type: 'critical' }] : []),
                         { text: isGlobal ? '全局' : '本地', type: isGlobal ? 'warn' : 'info' },
                     ],
                     payload: {
@@ -2173,7 +2571,9 @@ export function createScannerSession(options = {}) {
                         title: cand.label,
                         subtitle: `集合 ID: ${cand.id} · 已缓存 ${hashes.length} 个向量分块`,
                         sizeBytes: 0,
+                        sortMetric: hashes.length,
                         isActive: false,
+                        facets: ['ext:cache_orphan'],
                         badges: [{ text: `${hashes.length} 分块`, type: 'info' }],
                         payload: {
                             kind: 'vector_collection',
@@ -2202,10 +2602,13 @@ export function createScannerSession(options = {}) {
                     key: `backup:${fileName}`,
                     categoryId: 'extensions',
                     subgroupId: 'chat_backups',
-                    title: fileName,
-                    subtitle: `聊天自动备份${b.file_size ? ` · ${b.file_size}` : ''}${b.chat_items !== undefined ? ` · ${b.chat_items} 条消息` : ''}`,
-                    sizeBytes: 0,
-                    isActive: false,
+                title: fileName,
+                subtitle: `聊天自动备份${b.file_size ? ` · ${b.file_size}` : ''}${b.chat_items !== undefined ? ` · ${b.chat_items} 条消息` : ''}`,
+                sizeBytes: parseSizeStringBytes(b.file_size),
+                sortTimeMs: parseTavernTimestamp(b.last_mes, fileName),
+                sortMetric: (Number(b.chat_items) || 0) * 1024 + parseSizeStringBytes(b.file_size),
+                isActive: false,
+                    facets: ['ext:cache_orphan'],
                     badges: [{ text: '备份快照', type: 'muted' }],
                     payload: {
                         kind: 'chat_backup',
@@ -2257,6 +2660,7 @@ export function createScannerSession(options = {}) {
                         subtitle: `${typeLabel}${entry.size ? ` · ${Math.round(Number(entry.size) / 1024)} KB` : ''}`,
                         sizeBytes: Number(entry.size) || 0,
                         isActive: false,
+                        facets: ['ext:cache_orphan'],
                         badges: [{ text: typeLabel, type: 'warn' }],
                         payload: {
                             kind: 'data_maid',
@@ -2277,6 +2681,133 @@ export function createScannerSession(options = {}) {
             groups.push({ id: 'data_maid', label: '无主冗余孤儿文件', items: maidItems });
         }
         return { groups, warnings };
+    }
+
+    /**
+     * Builds ordered, non-zero secondary classification facets (`{ id, label, count, tone }[]`)
+     * for the scanned category so users can filter by tags, binding scopes, user vs built-in, etc.
+     */
+    function buildCategoryFacets(categoryId, groups) {
+        const ctx = getContext();
+        const tags = Array.isArray(ctx?.tags) ? ctx.tags.filter(t => t && t.id !== undefined && t.id !== null) : [];
+        const facetCounts = new Map();
+        for (const g of groups) {
+            for (const item of g.items) {
+                if (!Array.isArray(item.facets)) continue;
+                for (const fid of item.facets) {
+                    facetCounts.set(fid, (facetCounts.get(fid) || 0) + 1);
+                }
+            }
+        }
+
+        /** @type {Array<{ id: string, label: string, count: number, tone?: string }>} */
+        const out = [];
+        const pushIfAny = (id, label, tone = 'default') => {
+            const count = facetCounts.get(id) || 0;
+            if (count > 0) {
+                out.push({ id, label, count, tone });
+            }
+        };
+        const pushDynamicTags = () => {
+            const tagEntries = [];
+            for (const t of tags) {
+                const fid = `tag:${t.id}`;
+                const c = facetCounts.get(fid) || 0;
+                if (c > 0) {
+                    tagEntries.push({ id: fid, label: `#${t.name || t.id}`, count: c, tone: 'tag' });
+                }
+            }
+            tagEntries.sort((a, b) => b.count - a.count);
+            out.push(...tagEntries);
+        };
+
+        switch (categoryId) {
+            case 'characters':
+                pushIfAny('char:idle', '闲置无群聊/非收藏', 'safe');
+                pushIfAny('char:fav', '★ 星标收藏', 'warn');
+                pushIfAny('char:ingroup', '群聊成员');
+                pushIfAny('src:builtin', '官方初始角色');
+                pushDynamicTags();
+                pushIfAny('tag:__untagged__', '未打标签');
+                break;
+
+            case 'worldinfo':
+                pushIfAny('wi:unbound', '未绑定闲置', 'safe');
+                pushIfAny('wi:global', '全局常驻启用', 'warn');
+                pushIfAny('wi:char_primary', '角色主世界书');
+                pushIfAny('wi:char_extra', '角色辅助书');
+                pushIfAny('wi:persona_chat', '人设/会话绑定');
+                pushIfAny('wi:embedded', '角色卡内嵌');
+                pushIfAny('src:user', '用户自建');
+                pushIfAny('src:builtin', '官方自带');
+                pushDynamicTags();
+                break;
+
+            case 'chats':
+                pushIfAny('chat:branch', '历史旧分支', 'safe');
+                pushIfAny('chat:short_test', '极短测试档 (≤2条)', 'safe');
+                pushIfAny('chat:current_default', '各角色当前主会话', 'warn');
+                pushDynamicTags();
+                break;
+
+            case 'regex':
+                pushIfAny('rx:disabled', '已停用闲置', 'safe');
+                pushIfAny('rx:enabled', '启用中', 'warn');
+                pushIfAny('rx:st_regex', '原生正则');
+                pushIfAny('rx:tavern_helper', '酒馆助手脚本');
+                pushIfAny('rx:folder', '文件夹归档脚本');
+                pushIfAny('rx:vars_combos', '变量与开关组合');
+                break;
+
+            case 'presets':
+                pushIfAny('src:user', '用户自建预设', 'safe');
+                pushIfAny('src:builtin', '酒馆官方自带');
+                pushIfAny('crit:essential', '⚠️ 核心兜底底座', 'critical');
+                break;
+
+            case 'profiles': {
+                for (const [fid, count] of facetCounts.entries()) {
+                    if (fid.startsWith('api:') && count > 0) {
+                        out.push({ id: fid, label: `API: ${fid.slice(4)}`, count, tone: 'default' });
+                    }
+                }
+                break;
+            }
+
+            case 'personas':
+                pushIfAny('src:user', '用户自建/上传', 'safe');
+                pushIfAny('src:builtin', '酒馆官方自带');
+                pushIfAny('bg:animated', '动态背景');
+                pushIfAny('crit:essential', '⚠️ 核心兜底底座', 'critical');
+                break;
+
+            case 'media': {
+                pushIfAny('src:user', '用户资源', 'safe');
+                pushIfAny('tag_state:empty', '空置无角色标签', 'safe');
+                pushIfAny('crit:essential', '⚠️ 核心兜底底座', 'critical');
+                const folderEntries = [];
+                for (const [fid, count] of facetCounts.entries()) {
+                    if (fid.startsWith('folder:') && count > 0) {
+                        folderEntries.push({ id: fid, label: `📁 ${fid.slice(7)}`, count, tone: 'tag' });
+                    }
+                }
+                folderEntries.sort((a, b) => b.count - a.count);
+                out.push(...folderEntries);
+                break;
+            }
+
+            case 'extensions':
+                pushIfAny('ext:disabled', '已禁用扩展', 'safe');
+                pushIfAny('ext:cache_orphan', '缓存/备份/孤儿文件', 'safe');
+                pushIfAny('ext:enabled', '已启用扩展', 'warn');
+                pushIfAny('crit:essential', '⚠️ 核心生态底座', 'critical');
+                break;
+
+            default:
+                break;
+        }
+
+        return out;
     }
 
     /**
@@ -2334,18 +2865,24 @@ export function createScannerSession(options = {}) {
 
         let totalCount = 0;
         let activeCount = 0;
+        let criticalCount = 0;
         for (const g of groups) {
             totalCount += g.items.length;
             for (const item of g.items) {
                 if (item.isActive) activeCount++;
+                if (item.isCritical) criticalCount++;
             }
         }
+
+        const facets = buildCategoryFacets(categoryId, groups);
 
         const record = {
             categoryId,
             groups,
+            facets,
             totalCount,
             activeCount,
+            criticalCount,
             warnings,
             scannedAt: Date.now(),
         };
@@ -2378,12 +2915,31 @@ export function createScannerSession(options = {}) {
         dataMaidToken = null;
     }
 
+    /**
+     * Runs an on-demand multi-category deep diagnostic scan without blocking UI responsiveness.
+     * @param {{ signal?: AbortSignal, onProgress?: (msg: string) => void }} [opts]
+     */
+    async function runDeepHealthScan(opts = {}) {
+        const { signal, onProgress } = opts;
+        const targetCats = ['characters', 'worldinfo', 'regex', 'chats', 'media', 'extensions'];
+        for (let i = 0; i < targetCats.length; i++) {
+            if (signal?.aborted) throw new DOMException('Scan aborted', 'AbortError');
+            const cid = targetCats[i];
+            const def = CATEGORY_DEFS.find(c => c.id === cid);
+            onProgress?.(`正在深度体检 (${i + 1}/${targetCats.length})：${def?.label || cid}...`);
+            await scanCategory(cid, { force: false, signal, onProgress });
+        }
+        return categoryCache;
+    }
+
     return {
         whitelistMap,
         getOverviewSummary,
         warmOverviewMetadata,
         scanCategory,
+        runDeepHealthScan,
         getCachedCategory: (cid) => categoryCache.get(cid) || null,
+        getAllCachedCategories: () => categoryCache,
         invalidateCategories,
         getDataMaidToken: () => dataMaidToken,
         getSettingsSnapshot,

@@ -1,21 +1,46 @@
-MIT License
+ST-Cleaner Non-Commercial License (非商业使用许可协议)
 
-Copyright (c) 2026 lazyboysjh
+Copyright (c) 2026 lazyboysjh (https://github.com/lazyboysjh/ST-Cleaner)
+All rights reserved. 保留所有权利。
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+================================================================================
+一、中文条款（以中文条款为准）
+================================================================================
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+1. 授权许可范围（个人与非商业免费使用）
+在严格遵守本协议全部限制条件的前提下，版权所有人免费授予任何个人用户以下非独占、不可转让、可撤销的权利：
+  (a) 免费下载、安装、运行本软件（ST-Cleaner），用于个人非商业性质的 SillyTavern 数据管理与诊断；
+  (b) 出于个人学习、研究或自用适配目的阅读与修改本软件源代码；
+  (c) 在完全免费、无任何商业附加条件的前提下，复刻（Fork）、分享本软件或向原仓库提交修改建议（Pull Request），但必须完整保留原始版权声明、作者署名（lazyboysjh）、原项目仓库链接及本许可协议全文。
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+2. 严禁商业用途（未经作者事前书面授权，严禁以下任何行为）
+  (a) 直接或间接出售、出租、有偿转让本软件、源代码或其任何修改版、衍生版本；
+  (b) 将本软件（或其修改版、衍生版）打包、预装或分发于任何收费整合包、付费懒人包、商业部署镜像、付费教程附件或电商交易商品（包括但不限于闲鱼、淘宝、拼多多、爱发电、面包多、Patreon、付费网盘链接等渠道）；
+  (c) 以付费群、打赏解锁、会员专属、赞助门槛、引流变现等任何有偿或变相收费形式提供本软件的下载、安装或技术支持；
+  (d) 在任何商业化运营的云酒馆、托管平台（SaaS）、算力租赁预装环境或企业经营活动中使用、集成或预装本软件；
+  (e) 删除、隐藏、篡改本软件源码、清单文件（manifest.json）、界面或文档中的作者署名与非商用许可声明。
+
+如需商业授权或合作，必须事先联系版权所有人（GitHub: @lazyboysjh）并取得明确的书面授权许可。凡违反本协议上述任一条款者，其在本协议下获得的授权即刻自动终止，版权所有人保留追究其侵权法律责任的权利。
+
+3. 免责声明
+本软件按“原样”（AS IS）免费提供，不附带任何明示或暗示的担保（包括但不限于适销性、特定用途适用性及不侵权担保）。数据清理操作具有不可逆性，建议用户在执行大批量删除前自行备份重要数据。在任何情况下，作者或版权所有人均不对因使用、误操作或无法使用本软件而导致的任何数据丢失、业务中断或直接/间接损失承担责任。
+
+================================================================================
+II. English Summary & Terms
+================================================================================
+
+1. Grant of Non-Commercial License
+Subject to the terms and restrictions of this License, the copyright holder grants individuals a free, non-exclusive, non-transferable, revocable license to download, install, use, study, modify, and share this software ("ST-Cleaner") strictly for PERSONAL and NON-COMMERCIAL purposes, provided that the original copyright notice, author attribution ("lazyboysjh"), official repository URL, and this License are preserved in full in all copies or substantial portions of the software.
+
+2. Commercial Use Strictly Prohibited
+Without prior written permission from the copyright holder, you may NOT:
+  (a) Sell, lease, sublicense, or monetize this software or any modified/derivative works directly or indirectly;
+  (b) Bundle, pre-install, or distribute this software in any paid/commercial SillyTavern packages ("paid all-in-one packs"), commercial images, or paid resource bundles;
+  (c) Gate access to this software behind paid memberships, paid chat groups, sponsorships, donations, or monetized links;
+  (d) Use, host, or pre-install this software in any commercial cloud-hosted SillyTavern service, SaaS platform, or business operation;
+  (e) Remove, obscure, or alter any copyright, attribution, or license notices.
+
+Any breach of these restrictions automatically and immediately terminates all rights granted under this License.
+
+3. Disclaimer of Warranty
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DATA LOSS, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

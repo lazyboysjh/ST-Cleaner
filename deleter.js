@@ -11,6 +11,7 @@ import {
     SELF_EXTENSION_ID,
     LEGACY_SELF_EXTENSION_ID,
     BUILTIN_COMFY_WORKFLOWS,
+    HARD_PROTECTED_BACKGROUNDS,
     resolveSelfFolderName,
     stripExt,
     loadHostModules,
@@ -71,6 +72,9 @@ export function buildDeletionPreview(selectedKeys, scanner, opts = {}) {
     const skipActive = opts.skipActive !== false;
     const validItems = [];
     const skippedActiveItems = [];
+    const criticalItems = [];
+    const cautionItems = [];
+    const builtinItems = [];
     const rejectedKeys = [];
     const boundWorldbooks = [];
     const restorablePresets = [];
@@ -85,11 +89,20 @@ export function buildDeletionPreview(selectedKeys, scanner, opts = {}) {
             rejectedKeys.push(key);
             continue;
         }
-        if (skipActive && item.isActive) {
+        if (skipActive && (item.isActive || item.isCritical)) {
             skippedActiveItems.push(item);
             continue;
         }
         validItems.push(item);
+        if (item.isCritical) {
+            criticalItems.push(item);
+            requiresReload = true;
+        } else if (item.isCaution) {
+            cautionItems.push(item);
+        }
+        if (Array.isArray(item.facets) && item.facets.includes('src:builtin')) {
+            builtinItems.push(item);
+        }
         if (item.isActive) {
             requiresReload = true;
         }
@@ -98,9 +111,6 @@ export function buildDeletionPreview(selectedKeys, scanner, opts = {}) {
         }
         if (item.payload?.kind === 'wi_standalone' && item.payload.boundTargets?.length > 0) {
             boundWorldbooks.push(item);
-        }
-        if (item.payload?.kind === 'preset' && item.badges?.some(b => b.text === '默认可恢复')) {
-            restorablePresets.push(item);
         }
         if (item.payload?.kind === 'regex_scoped' || item.payload?.kind === 'th_char' || item.payload?.kind === 'wi_embedded') {
             affectedCharWritebacks.add(item.payload.avatar);
@@ -128,6 +138,9 @@ export function buildDeletionPreview(selectedKeys, scanner, opts = {}) {
     return {
         validItems,
         skippedActiveItems,
+        criticalItems,
+        cautionItems,
+        builtinItems,
         rejectedKeys,
         groupedList: [...groupedMap.values()],
         boundWorldbooks,
@@ -264,7 +277,9 @@ async function executeBatchDeleteInternal(params) {
     const skipped = preview.skippedActiveItems.map(item => ({
         key: item.key,
         title: item.title,
-        reason: '正在使用（已开启自动跳过保护）',
+        reason: item.isActive
+            ? '正在使用（已开启安全跳过保护）'
+            : '⚠️ 核心底座项（已开启防呆保护自动保留）',
     }));
     const failed = preview.rejectedKeys.map(key => ({
         key,
@@ -314,7 +329,9 @@ async function executeBatchDeleteInternal(params) {
                 if (!isSafeSingleToken(p.avatar)) unsafeReason = '人设头像文件名非法';
                 break;
             case 'background':
-                if (!isSafeSingleToken(p.bg)) unsafeReason = '背景文件名包含非法路径字符';
+                if (!isSafeSingleToken(p.bg) || HARD_PROTECTED_BACKGROUNDS.has(p.bg)) {
+                    unsafeReason = '禁止删除系统透明占位背景或包含非法路径字符';
+                }
                 break;
             case 'theme':
                 if (!isSafeSingleToken(p.name)) unsafeReason = '主题名称包含非法路径字符';

@@ -149,9 +149,27 @@ export function mergeIntervalsDuration(intervals) {
 }
 
 /**
- * Collects startup metrics from Performance API entries.
+ * Shortens a full resource URL into a clean readable endpoint or asset path.
+ * @param {string} rawUrl
+ * @returns {string}
+ */
+export function shortenResourceName(rawUrl) {
+  const s = String(rawUrl || '').trim();
+  if (!s) return '未知资源';
+  try {
+    const u = s.startsWith('http://') || s.startsWith('https://')
+      ? new URL(s)
+      : new URL(s, 'http://localhost');
+    const pathPart = decodeURIComponent(u.pathname || '').replace(/^\/+/, '');
+    return pathPart.length > 56 ? `…${pathPart.slice(-54)}` : (pathPart || s);
+  } catch {
+    return s.length > 56 ? `…${s.slice(-54)}` : s;
+  }
+}
+
+/**
+ * Collects startup metrics, navigation phases, and top slowest requests from Performance API entries.
  * @param {object} [perfObj] Optional performance mock for unit tests
- * @returns {{ timestamp: number, timeOrigin: number, totalMs: number, totalBytes: number, buckets: Array<{ id: string, label: string, targetCategory: string, targetSub?: string, color: string, durationMs: number, count: number, bytes: number }> }}
  */
 export function collectStartupSnapshot(perfObj = typeof performance !== 'undefined' ? performance : null) {
   const nowTs = Date.now();
@@ -161,6 +179,8 @@ export function collectStartupSnapshot(perfObj = typeof performance !== 'undefin
       timeOrigin: nowTs,
       totalMs: 0,
       totalBytes: 0,
+      phases: { ttfbMs: 0, domReadyMs: 0, resourceSpanMs: 0, requestCount: 0 },
+      slowestResources: [],
       buckets: BOOT_BUCKETS.map((b) => ({ ...b, durationMs: 0, count: 0, bytes: 0 })),
     };
   }
@@ -183,11 +203,15 @@ export function collectStartupSnapshot(perfObj = typeof performance !== 'undefin
 
   let maxEnd = 0;
   let totalBytes = 0;
+  const allIntervals = [];
+  const resourceCandidates = [];
 
   for (const entry of resources) {
     if (!entry || typeof entry !== 'object') continue;
-    const start = Number(entry.startTime) || 0;
-    const end = Number(entry.responseEnd) || start + (Number(entry.duration) || 0);
+    const start = Math.max(0, Number(entry.startTime) || 0);
+    const rawEnd = Number(entry.responseEnd) || start + (Number(entry.duration) || 0);
+    const end = Math.max(start, rawEnd);
+    const dur = Math.round(end - start);
     if (end > maxEnd) maxEnd = end;
 
     const bytes = Math.max(
@@ -196,6 +220,7 @@ export function collectStartupSnapshot(perfObj = typeof performance !== 'undefin
       Number(entry.encodedBodySize) || 0
     );
     totalBytes += bytes;
+    allIntervals.push([start, end]);
 
     const bucketId = classifyBootResource(entry.name);
     if (bucketId && acc[bucketId]) {
@@ -203,11 +228,25 @@ export function collectStartupSnapshot(perfObj = typeof performance !== 'undefin
       acc[bucketId].count += 1;
       acc[bucketId].bytes += bytes;
     }
+
+    if (dur >= 5 || bytes >= 32 * 1024) {
+      resourceCandidates.push({
+        shortName: shortenResourceName(entry.name),
+        bucketId: bucketId || 'other',
+        durationMs: dur,
+        bytes,
+      });
+    }
   }
 
-  const navEnd = navEntries[0]
-    ? Number(navEntries[0].loadEventEnd || navEntries[0].domComplete || 0)
-    : 0;
+  resourceCandidates.sort((a, b) => b.durationMs - a.durationMs || b.bytes - a.bytes);
+  const slowestResources = resourceCandidates.slice(0, 6);
+
+  const nav = navEntries[0] || null;
+  const navEnd = nav ? Number(nav.loadEventEnd || nav.domComplete || 0) : 0;
+  const ttfbMs = nav ? Math.max(0, Math.round((Number(nav.responseStart) || 0) - (Number(nav.requestStart) || 0))) : 0;
+  const domReadyMs = nav ? Math.max(0, Math.round(Number(nav.domContentLoadedEventEnd || nav.domInteractive || 0))) : 0;
+  const resourceSpanMs = mergeIntervalsDuration(allIntervals);
   const totalMs = Math.max(Math.round(maxEnd), Math.round(navEnd), 0);
 
   const buckets = BOOT_BUCKETS.map((b) => {
@@ -225,6 +264,13 @@ export function collectStartupSnapshot(perfObj = typeof performance !== 'undefin
     timeOrigin: Math.round(Number(perfObj.timeOrigin) || nowTs),
     totalMs,
     totalBytes,
+    phases: {
+      ttfbMs,
+      domReadyMs,
+      resourceSpanMs,
+      requestCount: resources.length,
+    },
+    slowestResources,
     buckets,
   };
 }
@@ -250,7 +296,44 @@ export function readBootHistory(storage = typeof localStorage !== 'undefined' ? 
 }
 
 /**
- * Records current boot snapshot once per page navigation (timeOrigin).
+ * Reads rolling 6-entry startup trend history from storage.
+ * @param {Storage} [storage]
+ * @returns {Array<{ timestamp: number, timeOrigin: number, totalMs: number, totalBytes: number }>}
+ */
+export function readBootTrend(storage = typeof localStorage !== 'undefined' ? localStorage : null) {
+  if (!storage) return [];
+  try {
+    const raw = storage.getItem(BOOT_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed?.history) && parsed.history.length > 0) {
+      return parsed.history.slice(-6);
+    }
+    const fallback = [];
+    if (parsed?.previousBoot?.totalMs) {
+      fallback.push({
+        timestamp: parsed.previousBoot.timestamp || 0,
+        timeOrigin: parsed.previousBoot.timeOrigin || 0,
+        totalMs: parsed.previousBoot.totalMs,
+        totalBytes: parsed.previousBoot.totalBytes || 0,
+      });
+    }
+    if (parsed?.currentBoot?.totalMs) {
+      fallback.push({
+        timestamp: parsed.currentBoot.timestamp || 0,
+        timeOrigin: parsed.currentBoot.timeOrigin || 0,
+        totalMs: parsed.currentBoot.totalMs,
+        totalBytes: parsed.currentBoot.totalBytes || 0,
+      });
+    }
+    return fallback;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Records current boot snapshot once per page navigation (timeOrigin), keeping a 6-entry rolling trend.
  * @param {object} [perfObj]
  * @param {Storage} [storage]
  */
@@ -261,6 +344,13 @@ export function recordBootSnapshotOnce(
   if (!storage || !perfObj) return null;
   const snapshot = collectStartupSnapshot(perfObj);
   const existing = readBootHistory(storage);
+  const existingTrend = readBootTrend(storage);
+  const summaryEntry = {
+    timestamp: snapshot.timestamp,
+    timeOrigin: snapshot.timeOrigin,
+    totalMs: snapshot.totalMs,
+    totalBytes: snapshot.totalBytes,
+  };
 
   if (existing.currentBoot && existing.currentBoot.timeOrigin === snapshot.timeOrigin) {
     const oldApiSum = (existing.currentBoot.buckets || []).reduce((s, b) => s + (b.durationMs || 0), 0);
@@ -268,9 +358,12 @@ export function recordBootSnapshotOnce(
     if (newApiSum < oldApiSum) {
       return existing;
     }
+    const nextHistory = existingTrend.filter((h) => h.timeOrigin !== snapshot.timeOrigin);
+    nextHistory.push(summaryEntry);
     const updated = {
       currentBoot: snapshot,
       previousBoot: existing.previousBoot,
+      history: nextHistory.slice(-6),
     };
     try {
       storage.setItem(BOOT_STORAGE_KEY, JSON.stringify(updated));
@@ -280,9 +373,12 @@ export function recordBootSnapshotOnce(
     return updated;
   }
 
+  const nextHistory = existingTrend.filter((h) => h.timeOrigin !== snapshot.timeOrigin);
+  nextHistory.push(summaryEntry);
   const nextState = {
     currentBoot: snapshot,
     previousBoot: existing.currentBoot || existing.previousBoot || null,
+    history: nextHistory.slice(-6),
   };
 
   try {
@@ -356,4 +452,248 @@ export function mountSettingsDrawer({ drawerId, getCfg, onToggle, onOpen, bootMs
   }
   return true;
 }
+
+/**
+ * Computes a fast (<1ms), non-blocking health score, runtime telemetry, and actionable cleanup prescriptions
+ * from live SillyTavern context, startup resource timing, and any scanned category records.
+ *
+ * @param {object} [params]
+ * @param {any} [params.ctx]
+ * @param {any} [params.settingsSnapshot]
+ * @param {any} [params.bootSnapshot]
+ * @param {Map<string, any> | Record<string, any>} [params.cachedCategories]
+ * @param {any} [params.perfObj]
+ */
+export function analyzeTavernHealth(params = {}) {
+  const ctx = params.ctx || {};
+  const boot = params.bootSnapshot || null;
+  const perfObj = params.perfObj !== undefined ? params.perfObj : (typeof performance !== 'undefined' ? performance : null);
+  const getCat = (cid) => {
+    if (!params.cachedCategories) return null;
+    if (typeof params.cachedCategories.get === 'function') return params.cachedCategories.get(cid) || null;
+    return params.cachedCategories[cid] || null;
+  };
+
+  const characters = Array.isArray(ctx?.characters) ? ctx.characters.filter(Boolean) : [];
+  const extSettings = ctx?.extensionSettings || ctx?.extension_settings || {};
+  const charCount = characters.length;
+  const shallowCount = characters.filter((c) => c?.shallow === true).length;
+  const lazyLoadEnabled = shallowCount > 0;
+
+  const globalRegexArr = Array.isArray(extSettings?.regex) ? extSettings.regex.filter(Boolean) : [];
+  const enabledGlobalRegex = globalRegexArr.filter((r) => !r.disabled).length;
+  const disabledGlobalRegex = globalRegexArr.filter((r) => r.disabled).length;
+
+  let activeCharRegex = 0;
+  const activeIdx = ctx?.characterId !== undefined && ctx?.characterId !== null && ctx?.characterId !== '' ? Number(ctx.characterId) : -1;
+  const activeChar = activeIdx >= 0 ? characters[activeIdx] : null;
+  if (Array.isArray(activeChar?.data?.extensions?.regex_scripts)) {
+    activeCharRegex = activeChar.data.extensions.regex_scripts.filter((r) => r && !r.disabled).length;
+  }
+
+  const jsHeapUsedBytes = Number(perfObj?.memory?.usedJSHeapSize) || 0;
+  const totalBootMs = Number(boot?.totalMs) || 0;
+  const totalBootBytes = Number(boot?.totalBytes) || 0;
+
+  let score = 100;
+  /** @type {Array<{ level: 'warn' | 'info' | 'good', title: string, detail: string, targetCategory?: string, targetSub?: string, targetFacet?: string, actionLabel?: string }>} */
+  const findings = [];
+
+  // 1. Boot duration diagnosis
+  if (totalBootMs > 4500) {
+    score -= 18;
+    const topSlow = Array.isArray(boot?.buckets) && boot.buckets[0]?.durationMs > 0 ? boot.buckets[0] : null;
+    findings.push({
+      level: 'warn',
+      title: `启动耗时偏慢 (${formatDuration(totalBootMs)})`,
+      detail: topSlow
+        ? `首屏主要阻塞在「${topSlow.label}」(${formatDuration(topSlow.durationMs)})，建议精简冗余资产。`
+        : '首屏静态与数据接口整体响应较慢，建议排查大体积角色卡或冗余插件。',
+      targetCategory: topSlow?.targetCategory || 'characters',
+      targetSub: topSlow?.targetSub || 'all',
+      actionLabel: '前往排查',
+    });
+  } else if (totalBootMs > 2200) {
+    score -= 8;
+  }
+
+  // 2. Character volume & Lazy-Load diagnosis
+  if (charCount >= 80 && !lazyLoadEnabled) {
+    score -= 14;
+    findings.push({
+      level: 'warn',
+      title: `已全量加载 ${charCount} 张角色卡（未开启懒加载）`,
+      detail: '角色卡较多时全量解析会拖慢 /api/characters/all 与内存占用，可在 config.yaml 开启 lazyLoadCharacters 或清理闲置废卡。',
+      targetCategory: 'characters',
+      targetSub: 'char_cards',
+      targetFacet: 'char:idle',
+      actionLabel: '筛闲置角色',
+    });
+  } else if (charCount >= 200) {
+    score -= 8;
+    findings.push({
+      level: 'info',
+      title: `角色库规模较大 (${charCount} 张)`,
+      detail: '可按标签或“最早旧档优先”排序，定期清理不再游玩的重复副本。',
+      targetCategory: 'characters',
+      targetSub: 'char_cards',
+      targetFacet: 'char:idle',
+      actionLabel: '整理角色卡',
+    });
+  }
+
+  // 3. Real-time regex overhead diagnosis
+  const totalActiveRegex = enabledGlobalRegex + activeCharRegex;
+  if (totalActiveRegex >= 25) {
+    score -= 10;
+    findings.push({
+      level: 'warn',
+      title: `当前同时生效 ${totalActiveRegex} 条正则脚本`,
+      detail: '每次消息渲染与流式输出都会逐条执行启用正则，停用或清理闲置脚本可明显提升流式帧率。',
+      targetCategory: 'regex',
+      targetSub: 'all',
+      targetFacet: 'rx:enabled',
+      actionLabel: '检查启用正则',
+    });
+  }
+
+  // 4. Scanned / Deep Check Redundancy Findings
+  const wiRec = getCat('worldinfo');
+  if (wiRec) {
+    const unboundCount = wiRec.groups?.find((g) => g.id === 'wi_unbound')?.items?.length || 0;
+    if (unboundCount > 0) {
+      score -= Math.min(10, Math.ceil(unboundCount / 3) * 2);
+      findings.push({
+        level: unboundCount >= 5 ? 'warn' : 'info',
+        title: `发现 ${unboundCount} 本未绑定闲置世界书`,
+        detail: '未被全局、角色卡或人设引用，可安全勾选清理。',
+        targetCategory: 'worldinfo',
+        targetSub: 'wi_unbound',
+        actionLabel: '一键查看',
+      });
+    }
+  }
+
+  const rxRec = getCat('regex');
+  const disabledRxTotal = rxRec
+    ? (rxRec.facets?.find((f) => f.id === 'rx:disabled')?.count || 0)
+    : disabledGlobalRegex;
+  if (disabledRxTotal > 0) {
+    score -= Math.min(8, Math.ceil(disabledRxTotal / 4) * 2);
+    findings.push({
+      level: 'info',
+      title: `检测到 ${disabledRxTotal} 条已停用正则/助手脚本`,
+      detail: '长期停用的废弃正则与脚本仍会占用 settings.json 读写体积。',
+      targetCategory: 'regex',
+      targetSub: 'all',
+      targetFacet: 'rx:disabled',
+      actionLabel: '筛已停用',
+    });
+  }
+
+  const extRec = getCat('extensions');
+  if (extRec) {
+    const orphanCount = extRec.groups?.find((g) => g.id === 'data_maid')?.items?.length || 0;
+    const backupCount = extRec.groups?.find((g) => g.id === 'chat_backups')?.items?.length || 0;
+    const vectorCount = extRec.groups?.find((g) => g.id === 'vectors')?.items?.length || 0;
+    const cacheTotal = orphanCount + backupCount + vectorCount;
+    if (cacheTotal > 0) {
+      score -= Math.min(12, orphanCount > 0 ? 6 + Math.min(6, Math.floor(cacheTotal / 5)) : 4);
+      findings.push({
+        level: orphanCount > 0 ? 'warn' : 'info',
+        title: `发现 ${cacheTotal} 项缓存/备份/无主孤儿文件`,
+        detail: `含无主孤儿 ${orphanCount} 项、聊天备份 ${backupCount} 份、向量缓存 ${vectorCount} 组，清理可释放磁盘空间。`,
+        targetCategory: 'extensions',
+        targetSub: 'all',
+        targetFacet: 'ext:cache_orphan',
+        actionLabel: '清理冗余文件',
+      });
+    }
+  }
+
+  const chatRec = getCat('chats');
+  if (chatRec) {
+    const shortChatCount = chatRec.facets?.find((f) => f.id === 'chat:short_test')?.count || 0;
+    const branchCount = chatRec.facets?.find((f) => f.id === 'chat:branch')?.count || 0;
+    if (shortChatCount > 0) {
+      score -= Math.min(6, Math.ceil(shortChatCount / 5) * 2);
+      findings.push({
+        level: 'info',
+        title: `发现 ${shortChatCount} 条极短测试废档会话 (≤2条消息)`,
+        detail: `另有历史非主线分支会话共 ${branchCount} 条，可一键筛出废档清理。`,
+        targetCategory: 'chats',
+        targetSub: 'char_chats',
+        targetFacet: 'chat:short_test',
+        actionLabel: '筛短废档',
+      });
+    }
+  }
+
+  const mediaRec = getCat('media');
+  if (mediaRec) {
+    const emptyTagCount = mediaRec.facets?.find((f) => f.id === 'tag_state:empty')?.count || 0;
+    if (emptyTagCount > 0) {
+      score -= 2;
+      findings.push({
+        level: 'info',
+        title: `存在 ${emptyTagCount} 个空置无角色标签`,
+        detail: '没有任何角色关联的废弃标签，清理可保持标签栏整洁。',
+        targetCategory: 'media',
+        targetSub: 'tags',
+        targetFacet: 'tag_state:empty',
+        actionLabel: '清理空标签',
+      });
+    }
+  }
+
+  const charRec = getCat('characters');
+  if (charRec) {
+    const idleChars = charRec.facets?.find((f) => f.id === 'char:idle')?.count || 0;
+    if (idleChars >= 3 && !findings.some((f) => f.targetCategory === 'characters')) {
+      findings.push({
+        level: 'info',
+        title: `共有 ${idleChars} 张未收藏且无群聊的闲置角色卡`,
+        detail: '支持按标签分类、按最后互动时间或聊天体积排序筛选。',
+        targetCategory: 'characters',
+        targetSub: 'char_cards',
+        targetFacet: 'char:idle',
+        actionLabel: '查看闲置角色',
+      });
+    }
+  }
+
+  if (findings.length === 0) {
+    findings.push({
+      level: 'good',
+      title: '当前酒馆运行轻快，暂未发现明显性能瓶颈',
+      detail: '可点击右上角「一键深度体检」扫描无主孤儿文件、短测试废档与闲置世界书。',
+    });
+  }
+
+  const clampedScore = Math.max(35, Math.min(100, Math.round(score)));
+  const grade = clampedScore >= 90 ? 'A' : (clampedScore >= 76 ? 'B' : (clampedScore >= 60 ? 'C' : 'D'));
+  const statusLabel = grade === 'A' ? '轻快极佳' : (grade === 'B' ? '健康良好' : (grade === 'C' ? '资产偏重' : '建议瘦身'));
+
+  const deepScannedCount = ['characters', 'chats', 'regex', 'worldinfo', 'media', 'extensions']
+    .filter((cid) => Boolean(getCat(cid))).length;
+
+  return {
+    score: clampedScore,
+    grade,
+    statusLabel,
+    isDeepScanned: deepScannedCount >= 5,
+    telemetry: {
+      charCount,
+      shallowCount,
+      lazyLoadEnabled,
+      activeRegexCount: totalActiveRegex,
+      disabledRegexCount: disabledRxTotal,
+      jsHeapUsedBytes,
+      totalBootMs,
+      totalBootBytes,
+    },
+    findings,
+  };
+}
+
 

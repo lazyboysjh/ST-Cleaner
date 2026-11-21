@@ -7,7 +7,9 @@
 
 import {
     readBootHistory,
+    readBootTrend,
     collectStartupSnapshot,
+    analyzeTavernHealth,
     formatDuration,
     formatBytes,
 } from './profiler.js';
@@ -30,6 +32,82 @@ const GROUP_ROW_HEIGHT = 40;
 const ITEM_ROW_HEIGHT = 56;
 const GROUP_BOTTOM_GAP = 8;
 const OVERSCAN_PX = 280;
+
+const NAME_COLLATOR = typeof Intl !== 'undefined' && typeof Intl.Collator === 'function'
+    ? new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' })
+    : null;
+
+function compareItemNames(aTitle, bTitle) {
+    const a = String(aTitle || '');
+    const b = String(bTitle || '');
+    if (NAME_COLLATOR) return NAME_COLLATOR.compare(a, b);
+    return a < b ? -1 : (a > b ? 1 : 0);
+}
+
+/**
+ * High-speed O(N log N) sorter for category items using precomputed numeric fields
+ * and a singleton `Intl.Collator` instance (zero allocations when `sortBy === 'default'`).
+ * @param {any[]} items
+ * @param {string} sortBy
+ * @returns {any[]}
+ */
+export function sortCategoryItems(items, sortBy = 'default') {
+    if (!Array.isArray(items) || items.length <= 1 || !sortBy || sortBy === 'default') {
+        return items;
+    }
+    const copy = items.slice();
+    switch (sortBy) {
+        case 'cleanable_first': {
+            const rankOf = (it) => {
+                if (it.isCritical) return 3;
+                if (it.isActive) return 2;
+                if (it.isCaution) return 1;
+                return 0;
+            };
+            copy.sort((a, b) => (rankOf(a) - rankOf(b)) || ((a.scanOrder || 0) - (b.scanOrder || 0)));
+            return copy;
+        }
+        case 'name_asc':
+            copy.sort((a, b) => compareItemNames(a.title, b.title) || ((a.scanOrder || 0) - (b.scanOrder || 0)));
+            return copy;
+        case 'name_desc':
+            copy.sort((a, b) => compareItemNames(b.title, a.title) || ((a.scanOrder || 0) - (b.scanOrder || 0)));
+            return copy;
+        case 'time_desc':
+            copy.sort((a, b) => {
+                const ta = a.sortTimeMs || 0;
+                const tb = b.sortTimeMs || 0;
+                if (ta > 0 && tb > 0 && tb !== ta) return tb - ta;
+                if (ta > 0 && tb === 0) return -1;
+                if (tb > 0 && ta === 0) return 1;
+                return (b.scanOrder || 0) - (a.scanOrder || 0);
+            });
+            return copy;
+        case 'time_asc':
+            copy.sort((a, b) => {
+                const ta = a.sortTimeMs || 0;
+                const tb = b.sortTimeMs || 0;
+                if (ta > 0 && tb > 0 && ta !== tb) return ta - tb;
+                if (ta > 0 && tb === 0) return -1;
+                if (tb > 0 && ta === 0) return 1;
+                return (a.scanOrder || 0) - (b.scanOrder || 0);
+            });
+            return copy;
+        case 'metric_desc':
+            copy.sort((a, b) => {
+                const ma = Number(a.sortMetric) || 0;
+                const mb = Number(b.sortMetric) || 0;
+                if (mb !== ma) return mb - ma;
+                const sa = Number(a.sizeBytes) || 0;
+                const sb = Number(b.sizeBytes) || 0;
+                if (sb !== sa) return sb - sa;
+                return (a.scanOrder || 0) - (b.scanOrder || 0);
+            });
+            return copy;
+        default:
+            return items;
+    }
+}
 
 let activeModalInstance = null;
 
@@ -105,12 +183,18 @@ export function openCleanerModal(options = {}) {
         requestTimeoutMs: options.requestTimeoutMs,
     });
 
+    const getLiveCtx = options.getContext || (() => globalThis.SillyTavern?.getContext?.() || {});
+
     const state = {
         theme: resolveInitialTheme(),
         activeTab: options.initialTab === 'workspace' ? 'workspace' : 'overview',
-        bootDetailExpanded: false,
+        diagTab: 'perf', // 'perf' | 'health' | 'requests'
+        isDeepScanning: false,
+        deepScanText: '',
         activeCategory: options.initialCategory || 'characters',
         activeSubgroup: 'all',
+        activeFacet: 'all',
+        sortBy: 'default',
         searchQuery: '',
         skipActive: true,
         isDeleting: false,
@@ -123,6 +207,7 @@ export function openCleanerModal(options = {}) {
         totalVirtualHeight: 0,
         lastRenderedRange: [-1, -1],
         scanAbort: null,
+        diagAbort: null,
         indexAbort: null,
         searchDebounceTimer: null,
     };
@@ -151,8 +236,8 @@ export function openCleanerModal(options = {}) {
                     <nav class="st-cleaner-nav-scroll st-cleaner-scroll" data-ref="sidebar"></nav>
                     <div class="st-cleaner-sidebar-promo">
                         <div class="st-cleaner-promo-dot"></div>
-                        <div class="st-cleaner-promo-title">安全保护引擎已就绪</div>
-                        <div class="st-cleaner-promo-desc">覆盖酒馆助手脚本、立绘、世界书等 30 类资产，自动跳过活跃项</div>
+                        <div class="st-cleaner-promo-title">安全防呆引擎已就绪</div>
+                        <div class="st-cleaner-promo-desc">覆盖 30 类资产与多维标签细分，默认保护活跃项与酒馆核心底座</div>
                     </div>
                 </aside>
 
@@ -199,12 +284,25 @@ export function openCleanerModal(options = {}) {
                                         <i class="fa-solid fa-circle-xmark"></i>
                                     </button>
                                 </div>
+                                <div class="st-cleaner-sort-wrap" title="切换列表排序规则">
+                                    <i class="fa-solid fa-arrow-down-wide-short st-cleaner-sort-icon"></i>
+                                    <select class="st-cleaner-sort-select" data-ref="sort-select" aria-label="排序规则">
+                                        <option value="default">默认顺序</option>
+                                        <option value="cleanable_first">闲置可删优先</option>
+                                        <option value="name_asc">名称 A → Z</option>
+                                        <option value="name_desc">名称 Z → A</option>
+                                        <option value="time_desc">时间：最新优先</option>
+                                        <option value="time_asc">时间：最早旧档</option>
+                                        <option value="metric_desc">体量 / 条数优先</option>
+                                    </select>
+                                </div>
                                 <div class="st-cleaner-bulk-btns">
                                     <button type="button" class="st-cleaner-btn-ghost" data-action="select-visible">全选结果</button>
                                     <button type="button" class="st-cleaner-btn-ghost is-muted" data-action="deselect-visible">取消本页</button>
                                 </div>
                             </div>
                             <div class="st-cleaner-subpills" data-ref="subpills"></div>
+                            <div class="st-cleaner-facetbar" data-ref="facetbar" hidden></div>
                         </div>
 
                         <div class="st-cleaner-scan-banner" data-ref="scan-banner" hidden></div>
@@ -223,10 +321,10 @@ export function openCleanerModal(options = {}) {
                                 <span class="st-cleaner-summary-dot"></span>
                                 <span data-ref="selected-count-text">已选 0 项</span>
                             </button>
-                            <label class="st-cleaner-skip-toggle">
+                            <label class="st-cleaner-skip-toggle" title="默认开启：自动跳过当前正在使用的项目与删后会导致酒馆异常的核心底座项">
                                 <input type="checkbox" class="st-cleaner-switch-input" data-ref="skip-active-checkbox" checked />
                                 <span class="st-cleaner-switch-track" aria-hidden="true"><span class="st-cleaner-switch-thumb"></span></span>
-                                <span>跳过“正在使用”项</span>
+                                <span>跳过活跃与核心底座项</span>
                             </label>
                         </div>
                         <div class="st-cleaner-footer-right">
@@ -266,7 +364,9 @@ export function openCleanerModal(options = {}) {
         mobileCats: root.querySelector('[data-ref="mobile-cats"]'),
         searchInput: root.querySelector('[data-ref="search-input"]'),
         searchClear: root.querySelector('[data-action="clear-search"]'),
+        sortSelect: root.querySelector('[data-ref="sort-select"]'),
         subpills: root.querySelector('[data-ref="subpills"]'),
+        facetbar: root.querySelector('[data-ref="facetbar"]'),
         scanBanner: root.querySelector('[data-ref="scan-banner"]'),
         viewport: root.querySelector('[data-ref="vlist-viewport"]'),
         spacer: root.querySelector('[data-ref="vlist-spacer"]'),
@@ -283,10 +383,12 @@ export function openCleanerModal(options = {}) {
 
     function getBootData() {
         const hist = readBootHistory();
-        if (hist.currentBoot) return hist;
+        const history = readBootTrend();
+        if (hist.currentBoot) return { ...hist, history };
         return {
             currentBoot: collectStartupSnapshot(),
             previousBoot: hist.previousBoot,
+            history,
         };
     }
 
@@ -406,14 +508,19 @@ export function openCleanerModal(options = {}) {
     }
 
     // =========================================================================
-    // View 1: Morandi Pastel Metric Cards + Editorial Statistics Progress Bars
+    // View 1: Morandi Pastel Metric Cards + Multi-Dimensional Diagnostics Center
     // =========================================================================
     function renderOverview() {
-        const { currentBoot, previousBoot } = getBootData();
+        const { currentBoot, previousBoot, history } = getBootData();
         const overviewSummary = scanner.getOverviewSummary();
         const selectedByCat = countSelectedByCategory();
         const buckets = Array.isArray(currentBoot?.buckets) ? currentBoot.buckets : [];
         const bucketMap = new Map(buckets.map(b => [b.id, b]));
+        const health = analyzeTavernHealth({
+            ctx: getLiveCtx(),
+            bootSnapshot: currentBoot,
+            cachedCategories: scanner.getAllCachedCategories(),
+        });
 
         // 1. 9-Tile Low-Saturation Morandi Pastel Bento Cards
         refs.bentoGrid.innerHTML = CATEGORY_DEFS.map(def => {
@@ -453,7 +560,7 @@ export function openCleanerModal(options = {}) {
             `;
         }).join('');
 
-        // 2. Editorial Statistics Horizontal Progress Bars
+        // 2. Multi-Dimensional Startup & Health Diagnostics Panel
         const totalMs = currentBoot?.totalMs || 0;
         let deltaHtml = '<span class="st-cleaner-boot-delta is-neutral">首次诊断基线</span>';
         if (previousBoot && previousBoot.totalMs > 0 && totalMs > 0) {
@@ -467,76 +574,179 @@ export function openCleanerModal(options = {}) {
             }
         }
 
-        const sumBucketMs = Math.max(1, totalMs || buckets.reduce((acc, b) => acc + (b.durationMs || 0), 0));
-        const sortedBuckets = [...buckets].sort((a, b) => (b.durationMs || 0) - (a.durationMs || 0));
-        const topBars = sortedBuckets.slice(0, 4);
+        const gradeTone = health.grade === 'A'
+            ? 'is-grade-a'
+            : (health.grade === 'B' ? 'is-grade-b' : 'is-grade-c');
 
-        const statBarsHtml = topBars.map((b, idx) => {
-            const dur = b.durationMs || 0;
-            const pct = dur > 0 ? Math.min(100, Math.max(6, Math.round((dur / sumBucketMs) * 100))) : 4;
-            const barTone = idx % 2 === 1 ? 'is-emerald' : 'is-obsidian';
-            return `
-                <div class="st-cleaner-stat-item">
-                    <div class="st-cleaner-stat-row">
-                        <span class="st-cleaner-stat-label">${escapeHtml(b.label)}</span>
-                        <span class="st-cleaner-stat-val">
-                            <strong>${escapeHtml(formatDuration(dur))}</strong>
-                            <em>/ ${escapeHtml(formatBytes(b.bytes || 0))}</em>
-                        </span>
-                    </div>
-                    <div class="st-cleaner-stat-track">
-                        <div class="st-cleaner-stat-fill ${barTone}" style="width:${pct}%"></div>
-                    </div>
+        const actionableCount = health.findings.filter(f => f.level !== 'good').length;
+
+        let bodyHtml = '';
+        if (state.diagTab === 'perf') {
+            const phases = currentBoot?.phases || {};
+            const sumBucketMs = Math.max(1, totalMs || buckets.reduce((acc, b) => acc + (b.durationMs || 0), 0));
+            const sortedBuckets = [...buckets].sort((a, b) => (b.durationMs || 0) - (a.durationMs || 0));
+            const topBars = sortedBuckets.slice(0, 4);
+
+            const historyChip = Array.isArray(history) && history.length >= 2
+                ? `<span class="st-cleaner-phase-pill">近 ${history.length} 次均值: <strong>${escapeHtml(formatDuration(Math.round(history.reduce((s, x) => s + (x.totalMs || 0), 0) / history.length)))}</strong></span>`
+                : '';
+
+            const phasePillsHtml = `
+                <div class="st-cleaner-phase-strip">
+                    <span class="st-cleaner-phase-pill">首字节 TTFB: <strong>${escapeHtml(formatDuration(phases.ttfbMs || 0))}</strong></span>
+                    <span class="st-cleaner-phase-pill">DOM 就绪: <strong>${escapeHtml(formatDuration(phases.domReadyMs || 0))}</strong></span>
+                    <span class="st-cleaner-phase-pill">资源传输: <strong>${escapeHtml(formatBytes(currentBoot?.totalBytes || 0))}</strong> (${phases.requestCount || 0} 请求)</span>
+                    <span class="st-cleaner-phase-pill">懒加载: <strong>${health.telemetry.lazyLoadEnabled ? `已启用 (${health.telemetry.shallowCount}/${health.telemetry.charCount})` : '未启用/全量'}</strong></span>
+                    ${historyChip}
                 </div>
             `;
-        }).join('');
 
-        const detailRowsHtml = buckets.map(b => `
-            <div class="st-cleaner-api-row">
-                <div class="st-cleaner-api-info">
-                    <div class="st-cleaner-api-name">${escapeHtml(b.label)}</div>
-                    <div class="st-cleaner-api-meta">${b.count || 0} 次请求 · 传输 ${escapeHtml(formatBytes(b.bytes || 0))}</div>
-                </div>
-                <div class="st-cleaner-api-right">
-                    <strong>${escapeHtml(formatDuration(b.durationMs))}</strong>
+            const statBarsHtml = topBars.map((b, idx) => {
+                const dur = b.durationMs || 0;
+                const pct = dur > 0 ? Math.min(100, Math.max(6, Math.round((dur / sumBucketMs) * 100))) : 4;
+                const barTone = idx % 2 === 1 ? 'is-emerald' : 'is-obsidian';
+                return `
                     <button
                         type="button"
-                        class="st-cleaner-link-btn"
+                        class="st-cleaner-stat-item st-cleaner-stat-clickable"
                         data-action="jump-category"
                         data-cat="${escapeHtml(b.targetCategory)}"
                         data-sub="${escapeHtml(b.targetSub || 'all')}"
+                        title="点击前往「${escapeHtml(b.label)}」对应分类清理"
                     >
-                        去清理 <i class="fa-solid fa-chevron-right"></i>
+                        <div class="st-cleaner-stat-row">
+                            <span class="st-cleaner-stat-label">${escapeHtml(b.label)}</span>
+                            <span class="st-cleaner-stat-val">
+                                <strong>${escapeHtml(formatDuration(dur))}</strong>
+                                <em>/ ${escapeHtml(formatBytes(b.bytes || 0))}</em>
+                            </span>
+                        </div>
+                        <div class="st-cleaner-stat-track">
+                            <div class="st-cleaner-stat-fill ${barTone}" style="width:${pct}%"></div>
+                        </div>
                     </button>
+                `;
+            }).join('');
+
+            bodyHtml = `${phasePillsHtml}<div class="st-cleaner-stat-bars">${statBarsHtml}</div>`;
+        } else if (state.diagTab === 'health') {
+            const tel = health.telemetry;
+            const heapStr = tel.jsHeapUsedBytes > 0 ? formatBytes(tel.jsHeapUsedBytes) : '浏览器未开放';
+            const telHtml = `
+                <div class="st-cleaner-phase-strip">
+                    <span class="st-cleaner-phase-pill">角色库规模: <strong>${tel.charCount} 张</strong></span>
+                    <span class="st-cleaner-phase-pill">实时生效正则: <strong>${tel.activeRegexCount} 条</strong></span>
+                    <span class="st-cleaner-phase-pill">已停用脚本: <strong>${tel.disabledRegexCount} 条</strong></span>
+                    <span class="st-cleaner-phase-pill">JS 堆内存: <strong>${escapeHtml(heapStr)}</strong></span>
                 </div>
-            </div>
-        `).join('');
+            `;
+            const findingsHtml = health.findings.map(f => {
+                const dotCls = f.level === 'warn' ? 'is-warn' : (f.level === 'good' ? 'is-good' : 'is-info');
+                const btnHtml = f.targetCategory
+                    ? `<button
+                        type="button"
+                        class="st-cleaner-finding-btn"
+                        data-action="jump-finding"
+                        data-cat="${escapeHtml(f.targetCategory)}"
+                        data-sub="${escapeHtml(f.targetSub || 'all')}"
+                        data-facet="${escapeHtml(f.targetFacet || 'all')}"
+                       >${escapeHtml(f.actionLabel || '前往处理')} <i class="fa-solid fa-arrow-right"></i></button>`
+                    : '';
+                return `
+                    <div class="st-cleaner-finding-row">
+                        <span class="st-cleaner-finding-dot ${dotCls}"></span>
+                        <div class="st-cleaner-finding-texts">
+                            <div class="st-cleaner-finding-title">${escapeHtml(f.title)}</div>
+                            <div class="st-cleaner-finding-detail">${escapeHtml(f.detail)}</div>
+                        </div>
+                        ${btnHtml}
+                    </div>
+                `;
+            }).join('');
+
+            bodyHtml = `${telHtml}<div class="st-cleaner-finding-list">${findingsHtml}</div>`;
+        } else {
+            const slowest = Array.isArray(currentBoot?.slowestResources) ? currentBoot.slowestResources : [];
+            const slowestHtml = slowest.length > 0
+                ? `
+                    <div class="st-cleaner-subhead-mini">首屏最慢单项请求 Top ${Math.min(4, slowest.length)}</div>
+                    ${slowest.slice(0, 4).map(r => `
+                        <div class="st-cleaner-api-row is-compact">
+                            <div class="st-cleaner-api-info">
+                                <div class="st-cleaner-api-name">${escapeHtml(r.shortName)}</div>
+                                <div class="st-cleaner-api-meta">传输 ${escapeHtml(formatBytes(r.bytes || 0))}</div>
+                            </div>
+                            <div class="st-cleaner-api-right">
+                                <strong>${escapeHtml(formatDuration(r.durationMs))}</strong>
+                            </div>
+                        </div>
+                    `).join('')}
+                    <div class="st-cleaner-subhead-mini" style="margin-top:4px">各模块接口归类汇总</div>
+                `
+                : '';
+
+            const detailRowsHtml = buckets.map(b => `
+                <div class="st-cleaner-api-row is-compact">
+                    <div class="st-cleaner-api-info">
+                        <div class="st-cleaner-api-name">${escapeHtml(b.label)}</div>
+                        <div class="st-cleaner-api-meta">${b.count || 0} 次请求 · 传输 ${escapeHtml(formatBytes(b.bytes || 0))}</div>
+                    </div>
+                    <div class="st-cleaner-api-right">
+                        <strong>${escapeHtml(formatDuration(b.durationMs))}</strong>
+                        <button
+                            type="button"
+                            class="st-cleaner-link-btn"
+                            data-action="jump-category"
+                            data-cat="${escapeHtml(b.targetCategory)}"
+                            data-sub="${escapeHtml(b.targetSub || 'all')}"
+                        >
+                            去清理 <i class="fa-solid fa-chevron-right"></i>
+                        </button>
+                    </div>
+                </div>
+            `).join('');
+
+            bodyHtml = `<div class="st-cleaner-boot-detail is-flat">${slowestHtml}${detailRowsHtml}</div>`;
+        }
+
+        const deepBtnLabel = state.isDeepScanning
+            ? `<i class="fa-solid fa-spinner fa-spin"></i> ${escapeHtml(state.deepScanText || '体检中...')}`
+            : `<i class="fa-solid fa-stethoscope"></i> ${health.isDeepScanned ? '重新深度体检' : '一键深度体检'}`;
 
         refs.bootCard.innerHTML = `
             <div class="st-cleaner-stats-head">
                 <div class="st-cleaner-stats-title-group">
-                    <span class="st-cleaner-stats-heading">启动耗时统计</span>
-                    <span class="st-cleaner-stats-total">${escapeHtml(formatDuration(totalMs))}</span>
+                    <span class="st-cleaner-health-pill ${gradeTone}" title="综合启动速度、角色懒加载、生效正则数量与冗余资产评估">
+                        健康度 ${escapeHtml(health.grade)} · ${health.score}分 (${escapeHtml(health.statusLabel)})
+                    </span>
+                    <span class="st-cleaner-stats-heading">启动 ${escapeHtml(formatDuration(totalMs))}</span>
                     ${deltaHtml}
                 </div>
-                <button type="button" class="st-cleaner-link-btn" data-action="toggle-boot-detail">
-                    <span>${state.bootDetailExpanded ? '收起接口明细' : '查看接口明细'}</span>
-                    <i class="fa-solid fa-chevron-${state.bootDetailExpanded ? 'up' : 'down'}"></i>
-                </button>
+                <div class="st-cleaner-diag-controls">
+                    <div class="st-cleaner-diag-tabs" role="tablist">
+                        <button type="button" class="st-cleaner-diag-tab ${state.diagTab === 'perf' ? 'is-active' : ''}" data-action="select-diag-tab" data-dtab="perf">启动性能</button>
+                        <button type="button" class="st-cleaner-diag-tab ${state.diagTab === 'health' ? 'is-active' : ''}" data-action="select-diag-tab" data-dtab="health">
+                            健康建议${actionableCount > 0 ? ` <em>${actionableCount}</em>` : ''}
+                        </button>
+                        <button type="button" class="st-cleaner-diag-tab ${state.diagTab === 'requests' ? 'is-active' : ''}" data-action="select-diag-tab" data-dtab="requests">慢请求明细</button>
+                    </div>
+                    <button type="button" class="st-cleaner-deep-btn" data-action="run-deep-diag" ${state.isDeepScanning ? 'disabled' : ''}>
+                        ${deepBtnLabel}
+                    </button>
+                </div>
             </div>
-            <div class="st-cleaner-stat-bars">${statBarsHtml}</div>
-            <div class="st-cleaner-boot-detail" ${state.bootDetailExpanded ? '' : 'hidden'}>
-                ${detailRowsHtml}
-            </div>
+            ${bodyHtml}
         `;
     }
 
     // =========================================================================
-    // View 2: Subpills + Fixed-Height Windowed Virtual List
+    // View 2: Subpills + Facet Bar + Fixed-Height Windowed Virtual List
     // =========================================================================
     function renderSubpills(categoryRecord) {
         if (!categoryRecord) {
             refs.subpills.innerHTML = '';
+            refs.facetbar.hidden = true;
+            refs.facetbar.innerHTML = '';
             return;
         }
         const groups = categoryRecord.groups || [];
@@ -551,10 +761,62 @@ export function openCleanerModal(options = {}) {
             );
         }
         refs.subpills.innerHTML = pills.join('');
+        renderFacets(categoryRecord);
+    }
+
+    function renderFacets(categoryRecord) {
+        if (!categoryRecord || !Array.isArray(categoryRecord.facets) || categoryRecord.facets.length === 0) {
+            refs.facetbar.hidden = true;
+            refs.facetbar.innerHTML = '';
+            return;
+        }
+
+        // Recompute counts scoped to the currently active subgroup so pills never show stale numbers
+        const scopedCounts = new Map();
+        for (const g of categoryRecord.groups || []) {
+            if (state.activeSubgroup !== 'all' && g.id !== state.activeSubgroup) continue;
+            for (const item of g.items) {
+                if (!Array.isArray(item.facets)) continue;
+                for (const fid of item.facets) {
+                    scopedCounts.set(fid, (scopedCounts.get(fid) || 0) + 1);
+                }
+            }
+        }
+
+        const visibleFacets = categoryRecord.facets
+            .map(f => ({ ...f, scopedCount: scopedCounts.get(f.id) || 0 }))
+            .filter(f => f.scopedCount > 0);
+
+        if (visibleFacets.length === 0) {
+            state.activeFacet = 'all';
+            refs.facetbar.hidden = true;
+            refs.facetbar.innerHTML = '';
+            return;
+        }
+
+        if (state.activeFacet !== 'all' && !visibleFacets.some(f => f.id === state.activeFacet)) {
+            state.activeFacet = 'all';
+        }
+
+        const html = [
+            `<span class="st-cleaner-facet-label"><i class="fa-solid fa-sliders"></i> 细分</span>`,
+            `<button type="button" class="st-cleaner-facetpill ${state.activeFacet === 'all' ? 'is-active' : ''}" data-action="select-facet" data-facet="all">不限</button>`,
+        ];
+
+        for (const f of visibleFacets) {
+            const isAct = state.activeFacet === f.id;
+            const toneCls = f.tone ? `is-tone-${f.tone}` : '';
+            html.push(
+                `<button type="button" class="st-cleaner-facetpill ${toneCls} ${isAct ? 'is-active' : ''}" data-action="select-facet" data-facet="${escapeHtml(f.id)}">${escapeHtml(f.label)} <em>${f.scopedCount}</em></button>`,
+            );
+        }
+
+        refs.facetbar.innerHTML = html.join('');
+        refs.facetbar.hidden = false;
     }
 
     /**
-     * Recomputes flat virtual rows (`flatRows`) for the active category, subgroup & search terms.
+     * Recomputes flat virtual rows (`flatRows`) for the active category, subgroup, facet & search terms.
      */
     function rebuildVirtualRows(categoryRecord) {
         state.flatRows = [];
@@ -568,6 +830,7 @@ export function openCleanerModal(options = {}) {
         }
 
         const terms = parseQueryTerms(state.searchQuery);
+        const facetFilter = state.activeFacet;
         let offsetY = 4;
         let matchedItemCount = 0;
 
@@ -575,11 +838,18 @@ export function openCleanerModal(options = {}) {
             if (state.activeSubgroup !== 'all' && group.id !== state.activeSubgroup) {
                 continue;
             }
-            const filteredItems = terms.length > 0
-                ? group.items.filter(item => matchesSearchTerms(item, terms))
-                : group.items;
+            const matchedItems = group.items.filter(item => {
+                if (facetFilter !== 'all' && (!Array.isArray(item.facets) || !item.facets.includes(facetFilter))) {
+                    return false;
+                }
+                if (terms.length > 0 && !matchesSearchTerms(item, terms)) {
+                    return false;
+                }
+                return true;
+            });
 
-            if (filteredItems.length === 0) continue;
+            if (matchedItems.length === 0) continue;
+            const filteredItems = sortCategoryItems(matchedItems, state.sortBy);
             matchedItemCount += filteredItems.length;
 
             const collapseKey = `${categoryRecord.categoryId}::${group.id}`;
@@ -672,13 +942,15 @@ export function openCleanerModal(options = {}) {
         for (let i = startIdx; i < endIdx; i++) {
             const row = rows[i];
             if (row.type === 'group') {
-                let allGroupSelected = row.items.length > 0;
-                for (let k = 0; k < row.items.length; k++) {
-                    if (!state.selectedKeys.has(row.items[k].key)) {
-                        allGroupSelected = false;
-                        break;
-                    }
-                }
+                const selectablePool = state.skipActive
+                    ? row.items.filter(it => !it.isActive && !it.isCritical)
+                    : row.items;
+                const anyCheckedInGroup = row.items.some(it => state.selectedKeys.has(it.key));
+                const allGroupSelected = selectablePool.length > 0
+                    ? selectablePool.every(it => state.selectedKeys.has(it.key))
+                    : anyCheckedInGroup;
+                const isAllProtected = state.skipActive && selectablePool.length === 0 && !anyCheckedInGroup;
+
                 htmlChunks.push(`
                     <div class="st-cleaner-vgroup-row" data-row-idx="${i}">
                         <div class="st-cleaner-vgroup-title" data-action="toggle-collapse" data-collapse-key="${escapeHtml(row.collapseKey)}">
@@ -686,24 +958,33 @@ export function openCleanerModal(options = {}) {
                             <span class="st-cleaner-vgroup-name">${escapeHtml(row.label)}</span>
                             <span class="st-cleaner-vgroup-count">${row.items.length}</span>
                         </div>
-                        <button type="button" class="st-cleaner-vgroup-btn" data-action="toggle-group-select" data-row-idx="${i}">
-                            ${allGroupSelected ? '取消本组' : '全选本组'}
+                        <button type="button" class="st-cleaner-vgroup-btn" data-action="toggle-group-select" data-row-idx="${i}" ${isAllProtected ? 'disabled' : ''}>
+                            ${isAllProtected ? '均受保护' : (allGroupSelected ? '取消本组' : '全选本组')}
                         </button>
                     </div>
                 `);
             } else {
                 const item = row.item;
                 const checked = state.selectedKeys.has(item.key);
-                const badgesHtml = (item.badges || []).slice(0, 2).map(b => {
-                    const cls = b.type === 'active'
-                        ? 'st-cleaner-badge-active'
-                        : (b.type === 'warn' ? 'st-cleaner-badge-warn' : 'st-cleaner-badge-muted');
+                const badgesHtml = (item.badges || []).slice(0, 3).map(b => {
+                    let cls = 'st-cleaner-badge-muted';
+                    switch (b.type) {
+                        case 'active': cls = 'st-cleaner-badge-active'; break;
+                        case 'critical': cls = 'st-cleaner-badge-critical'; break;
+                        case 'fav': cls = 'st-cleaner-badge-fav'; break;
+                        case 'warn': cls = 'st-cleaner-badge-warn'; break;
+                        case 'tag': cls = 'st-cleaner-badge-tag'; break;
+                        case 'info': cls = 'st-cleaner-badge-info'; break;
+                        case 'user': cls = 'st-cleaner-badge-user'; break;
+                        case 'builtin': cls = 'st-cleaner-badge-builtin'; break;
+                        default: cls = 'st-cleaner-badge-muted'; break;
+                    }
                     return `<span class="st-cleaner-badge ${cls}">${escapeHtml(b.text)}</span>`;
                 }).join('');
 
                 htmlChunks.push(`
                     <div
-                        class="st-cleaner-vitem-row ${row.isFirst ? 'is-group-first' : ''} ${row.isLast ? 'is-group-last' : ''} ${checked ? 'is-checked' : ''}"
+                        class="st-cleaner-vitem-row ${row.isFirst ? 'is-group-first' : ''} ${row.isLast ? 'is-group-last' : ''} ${checked ? 'is-checked' : ''} ${item.isCritical ? 'is-critical' : ''}"
                         data-action="toggle-item"
                         data-key="${escapeHtml(item.key)}"
                     >
@@ -824,9 +1105,10 @@ export function openCleanerModal(options = {}) {
         }
     }
 
-    function selectCategoryAndOpen(catId, subId = 'all') {
+    function selectCategoryAndOpen(catId, subId = 'all', facetId = 'all') {
         state.activeCategory = catId;
         state.activeSubgroup = subId || 'all';
+        state.activeFacet = facetId || 'all';
         refs.viewport.scrollTop = 0;
         if (state.activeTab !== 'workspace') {
             switchTab('workspace');
@@ -837,18 +1119,55 @@ export function openCleanerModal(options = {}) {
         }
     }
 
+    async function runDeepDiagnostics() {
+        if (state.isDeepScanning) return;
+        if (state.diagAbort) state.diagAbort.abort();
+        const ctrl = new AbortController();
+        state.diagAbort = ctrl;
+        state.isDeepScanning = true;
+        state.diagTab = 'health';
+        state.deepScanText = '准备深度体检...';
+        renderOverview();
+
+        try {
+            await scanner.runDeepHealthScan({
+                signal: ctrl.signal,
+                onProgress: (msg) => {
+                    if (!ctrl.signal.aborted) {
+                        state.deepScanText = msg.replace(/^正在深度体检\s*/, '体检 ');
+                        if (state.activeTab === 'overview') renderOverview();
+                    }
+                },
+            });
+        } catch {
+            // Aborted or partial error; render whatever was collected
+        } finally {
+            if (state.diagAbort === ctrl) {
+                state.isDeepScanning = false;
+                state.deepScanText = '';
+                state.diagAbort = null;
+                renderNavigation();
+                if (state.activeTab === 'overview') renderOverview();
+            }
+        }
+    }
+
     // =========================================================================
-    // Popover for 500-char Ultra-Long Names
+    // Popover for 500-char Ultra-Long Names & Critical Safety Details
     // =========================================================================
     function showItemPopover(key, anchorEl) {
         const item = scanner.whitelistMap.get(key);
         if (!item || !anchorEl) return;
 
         const badgesText = (item.badges || []).map(b => b.text).join(' · ');
+        const critHtml = item.isCritical && item.criticalReason
+            ? `<div class="st-cleaner-pop-crit">⚠️ 重点保护：${escapeHtml(item.criticalReason)}</div>`
+            : '';
         popover.innerHTML = `
             <div class="st-cleaner-pop-title">${escapeHtml(item.title)}</div>
             <div class="st-cleaner-pop-sub">${escapeHtml(item.subtitle || '无附加描述')}</div>
-            ${badgesText ? `<div class="st-cleaner-pop-meta">状态：${escapeHtml(badgesText)}</div>` : ''}
+            ${critHtml}
+            ${badgesText ? `<div class="st-cleaner-pop-meta">标记：${escapeHtml(badgesText)}</div>` : ''}
         `;
         popover.hidden = false;
 
@@ -890,17 +1209,44 @@ export function openCleanerModal(options = {}) {
 
         const warnings = [];
         if (preview.skippedActiveItems.length > 0) {
-            warnings.push(`已开启安全保护：自动跳过 ${preview.skippedActiveItems.length} 个“正在使用”项目。`);
+            const activeSkipped = preview.skippedActiveItems.filter(i => i.isActive).length;
+            const critSkipped = preview.skippedActiveItems.length - activeSkipped;
+            const skipDetail = [
+                activeSkipped > 0 ? `${activeSkipped} 项正在使用` : '',
+                critSkipped > 0 ? `${critSkipped} 项酒馆核心底座` : '',
+            ].filter(Boolean).join('、');
+            warnings.push(`已开启安全保护：自动跳过 ${preview.skippedActiveItems.length} 项（${skipDetail}）。`);
         }
         if (preview.requiresReload) {
-            warnings.push('所选项目中包含当前打开/启用的活跃资源，清理并落盘完成后将提示刷新页面。');
+            warnings.push('所选项目中包含当前启用资源或核心组件，清理并落盘完成后将提示刷新页面。');
         }
         if (preview.boundWorldbooks.length > 0) {
             warnings.push(`包含 ${preview.boundWorldbooks.length} 本已绑定独立世界书，删除后将自动解绑角色、全局与人设引用。`);
         }
-        if (preview.restorablePresets.length > 0) {
-            warnings.push(`包含 ${preview.restorablePresets.length} 个酒馆默认同名模板，重启酒馆时官方机制可能自动恢复默认副本。`);
+        if (preview.builtinItems?.length > 0) {
+            warnings.push(`包含 ${preview.builtinItems.length} 项酒馆官方初始模板/资产，受酒馆 content.log 机制影响，删除后重启不会自动恢复。`);
         }
+
+        const criticalBoxHtml = preview.criticalItems?.length > 0
+            ? `
+                <div class="st-cleaner-danger-box">
+                    <div class="st-cleaner-danger-head">
+                        <i class="fa-solid fa-triangle-exclamation"></i>
+                        <span>重点高危预警：已勾选 ${preview.criticalItems.length} 项酒馆核心底座！</span>
+                    </div>
+                    <div class="st-cleaner-danger-desc">以下项目删空后重启酒馆不会自动恢复，可能导致对应功能面板报错、无默认回退或角色卡前端/脚本大面积失效：</div>
+                    <div class="st-cleaner-danger-list">
+                        ${preview.criticalItems.slice(0, 6).map(ci => `
+                            <div class="st-cleaner-danger-item">
+                                <strong>${escapeHtml(ci.title)}</strong>
+                                <span>— ${escapeHtml(ci.criticalReason || '酒馆核心底座项，强烈建议保留')}</span>
+                            </div>
+                        `).join('')}
+                        ${preview.criticalItems.length > 6 ? `<div class="st-cleaner-danger-item">…及其他 ${preview.criticalItems.length - 6} 项核心底座</div>` : ''}
+                    </div>
+                </div>
+            `
+            : '';
 
         const coalescedParts = [];
         if (preview.coalescedStats.charWritebacks > 0) {
@@ -941,9 +1287,10 @@ export function openCleanerModal(options = {}) {
                 </button>
             </div>
             <div class="st-cleaner-sheet-body st-cleaner-scroll">
+                ${criticalBoxHtml}
                 ${warnings.length > 0 ? `<div class="st-cleaner-warn-box">${warnings.map(w => `<div>• ${escapeHtml(w)}</div>`).join('')}</div>` : ''}
                 ${coalescedParts.length > 0 ? `<div class="st-cleaner-coalesce-note"><i class="fa-solid fa-bolt"></i> 高速同源合并写回：内嵌脚本与世界书仅需 ${escapeHtml(coalescedParts.join(' + '))}</div>` : ''}
-                ${groupCardsHtml || '<div class="st-cleaner-empty-inline">当前无可执行的非活跃项目。</div>'}
+                ${groupCardsHtml || '<div class="st-cleaner-empty-inline">当前无可执行的非保护项目（已选项目均受到活跃或核心底座防呆保护）。</div>'}
             </div>
             <div class="st-cleaner-sheet-foot">
                 <button type="button" class="st-cleaner-btn-ghost is-danger" data-action="clear-all-selected" style="margin-right:auto">清空已选</button>
@@ -1128,8 +1475,15 @@ export function openCleanerModal(options = {}) {
         }, 120);
     });
 
+    refs.sortSelect.addEventListener('change', () => {
+        state.sortBy = refs.sortSelect.value || 'default';
+        refs.viewport.scrollTop = 0;
+        rebuildVirtualRows(currentCategoryRecord);
+    });
+
     refs.skipCheckbox.addEventListener('change', () => {
         state.skipActive = Boolean(refs.skipCheckbox.checked);
+        renderVisibleVirtualWindow(true);
         updateFooterBar();
     });
 
@@ -1191,9 +1545,21 @@ export function openCleanerModal(options = {}) {
                 }
                 break;
 
-            case 'toggle-boot-detail':
-                state.bootDetailExpanded = !state.bootDetailExpanded;
+            case 'select-diag-tab':
+                state.diagTab = actionEl.dataset.dtab || 'perf';
                 renderOverview();
+                break;
+
+            case 'run-deep-diag':
+                runDeepDiagnostics();
+                break;
+
+            case 'jump-finding':
+                selectCategoryAndOpen(
+                    actionEl.dataset.cat || 'characters',
+                    actionEl.dataset.sub || 'all',
+                    actionEl.dataset.facet || 'all',
+                );
                 break;
 
             case 'jump-category':
@@ -1213,6 +1579,13 @@ export function openCleanerModal(options = {}) {
                 rebuildVirtualRows(currentCategoryRecord);
                 break;
 
+            case 'select-facet':
+                state.activeFacet = actionEl.dataset.facet || 'all';
+                refs.viewport.scrollTop = 0;
+                renderFacets(currentCategoryRecord);
+                rebuildVirtualRows(currentCategoryRecord);
+                break;
+
             case 'clear-search':
                 refs.searchInput.value = '';
                 refs.searchClear.hidden = true;
@@ -1229,7 +1602,7 @@ export function openCleanerModal(options = {}) {
                 for (const row of state.flatRows) {
                     if (row.type === 'group') {
                         for (const item of row.items) {
-                            if (state.skipActive && item.isActive) continue;
+                            if (state.skipActive && (item.isActive || item.isCritical)) continue;
                             state.selectedKeys.add(item.key);
                         }
                     }
@@ -1271,14 +1644,20 @@ export function openCleanerModal(options = {}) {
                 const row = state.flatRows[idx];
                 if (!row || row.type !== 'group') break;
                 const selectable = state.skipActive
-                    ? row.items.filter(it => !it.isActive)
+                    ? row.items.filter(it => !it.isActive && !it.isCritical)
                     : row.items;
-                const targetItems = selectable.length > 0 ? selectable : row.items;
-                const allChecked = targetItems.every(it => state.selectedKeys.has(it.key));
-                if (allChecked) {
-                    for (const it of row.items) state.selectedKeys.delete(it.key);
+                const anyChecked = row.items.some(it => state.selectedKeys.has(it.key));
+                if (selectable.length === 0) {
+                    if (anyChecked) {
+                        for (const it of row.items) state.selectedKeys.delete(it.key);
+                    }
                 } else {
-                    for (const it of targetItems) state.selectedKeys.add(it.key);
+                    const allChecked = selectable.every(it => state.selectedKeys.has(it.key));
+                    if (allChecked) {
+                        for (const it of row.items) state.selectedKeys.delete(it.key);
+                    } else {
+                        for (const it of selectable) state.selectedKeys.add(it.key);
+                    }
                 }
                 renderVisibleVirtualWindow(true);
                 renderNavigation();
@@ -1357,6 +1736,7 @@ export function openCleanerModal(options = {}) {
 
     function closeModal() {
         if (state.scanAbort) state.scanAbort.abort();
+        if (state.diagAbort) state.diagAbort.abort();
         if (state.indexAbort) state.indexAbort.abort();
         clearTimeout(state.searchDebounceTimer);
         resizeObserver?.disconnect();
