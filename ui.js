@@ -185,6 +185,7 @@ export function openCleanerModal(options = {}) {
 
     const getLiveCtx = options.getContext || (() => globalThis.SillyTavern?.getContext?.() || {});
 
+    let isDisposed = false;
     const state = {
         theme: resolveInitialTheme(),
         activeTab: options.initialTab === 'workspace' ? 'workspace' : 'overview',
@@ -1735,6 +1736,7 @@ export function openCleanerModal(options = {}) {
     document.addEventListener('keydown', onKeyDown);
 
     function closeModal() {
+        isDisposed = true;
         if (state.scanAbort) state.scanAbort.abort();
         if (state.diagAbort) state.diagAbort.abort();
         if (state.indexAbort) state.indexAbort.abort();
@@ -1753,7 +1755,7 @@ export function openCleanerModal(options = {}) {
     // Initial render + non-blocking metadata warm
     switchTab(state.activeTab);
     scanner.warmOverviewMetadata().then(() => {
-        if (activeModalInstance) {
+        if (!isDisposed) {
             renderNavigation();
             if (state.activeTab === 'overview') {
                 renderOverview();
