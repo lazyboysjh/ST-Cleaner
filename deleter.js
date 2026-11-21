@@ -7,7 +7,7 @@
  * Stage 3: Unified in-memory reference cleanup, guarded event emission & immediate saveSettings flush
  */
 
-import { SELF_EXTENSION_ID, resolveSelfFolderName, stripExt } from './scanner.js';
+import { SELF_EXTENSION_ID, resolveSelfFolderName, stripExt, loadHostModules } from './scanner.js';
 
 export const STAGE1_CONCURRENCY = 5;
 export const STAGE2_CONCURRENCY = 3;
@@ -38,6 +38,19 @@ export function isSafeGalleryPath(relPath) {
     if (s.includes('..') || s.includes('\\') || s.includes('\0')) return false;
     const parts = s.split('/');
     return parts.length >= 4 && parts.every(Boolean);
+}
+
+/**
+ * Validates Data Bank relative file paths (`user/files/<file>`).
+ * @param {string} relPath
+ * @returns {boolean}
+ */
+export function isSafeUserFilesPath(relPath) {
+    const s = String(relPath ?? '');
+    if (!s.startsWith('user/files/')) return false;
+    if (s.includes('..') || s.includes('\\') || s.includes('\0')) return false;
+    const parts = s.split('/');
+    return parts.length === 3 && isSafeSingleToken(parts[2]);
 }
 
 /**
@@ -249,7 +262,7 @@ export async function executeBatchDelete(params) {
                 if (!isSafeSingleToken(p.name)) unsafeReason = '快捷回复名称包含非法路径字符';
                 break;
             case 'databank':
-                if (!isSafeSingleToken(p.filePath)) unsafeReason = '资料库附件文件名非法';
+                if (!isSafeUserFilesPath(p.filePath)) unsafeReason = '资料库附件路径非法';
                 break;
             case 'gallery_image':
                 if (!isSafeGalleryPath(p.path)) unsafeReason = '画廊图片路径越界';
@@ -965,11 +978,12 @@ export async function executeBatchDelete(params) {
     // =========================================================================
     emitProgress(3, '第三阶段：解绑残留引用并持久化设置', '正在同步内存状态...');
 
+    const hostMods = await loadHostModules();
     const extSettings = ctx?.extensionSettings || ctx?.extension_settings || {};
     const powerUser = ctx?.powerUserSettings || ctx?.power_user || {};
     const chatMeta = ctx?.chatMetadata || ctx?.chat_metadata || {};
     const tagMap = ctx?.tagMap || ctx?.tag_map || {};
-    const worldInfo = ctx?.worldInfo || ctx?.world_info || {};
+    const worldInfo = hostMods?.worldInfo?.world_info || ctx?.worldInfo || ctx?.world_info || {};
 
     // Process Stage 3 direct settings-backed items (regex_global, regex_combo, conn_profile, tag)
     for (const item of stage3DirectItems) {
@@ -1103,14 +1117,16 @@ export async function executeBatchDelete(params) {
 
     // Unbind deleted standalone worldbooks across globalSelect, charLore, and personas
     if (deletedWorldNames.size > 0) {
-        if (Array.isArray(ctx?.worldNames)) {
-            for (let i = ctx.worldNames.length - 1; i >= 0; i--) {
-                if (deletedWorldNames.has(ctx.worldNames[i])) {
-                    ctx.worldNames.splice(i, 1);
+        for (const namesArr of [hostMods?.worldInfo?.world_names, ctx?.worldNames]) {
+            if (Array.isArray(namesArr)) {
+                for (let i = namesArr.length - 1; i >= 0; i--) {
+                    if (deletedWorldNames.has(namesArr[i])) {
+                        namesArr.splice(i, 1);
+                    }
                 }
             }
         }
-        for (const arrRef of [worldInfo.globalSelect, ctx?.selected_world_info]) {
+        for (const arrRef of [hostMods?.worldInfo?.selected_world_info, worldInfo.globalSelect, ctx?.selected_world_info]) {
             if (Array.isArray(arrRef)) {
                 for (let i = arrRef.length - 1; i >= 0; i--) {
                     if (deletedWorldNames.has(arrRef[i])) {
@@ -1141,8 +1157,10 @@ export async function executeBatchDelete(params) {
             }
         }
         for (const wName of deletedWorldNames) {
+            try { hostMods?.worldInfo?.worldInfoCache?.delete?.(wName); } catch {}
             await safeEmit(ctx, 'WORLDINFO_UPDATED', wName, null);
         }
+        try { await hostMods?.worldInfo?.updateWorldInfoList?.(); } catch {}
     }
 
     // Unbind deleted presets & emit PRESET_DELETED
@@ -1211,7 +1229,18 @@ export async function executeBatchDelete(params) {
     }
 
     // Single immediate settings flush (never rely solely on unawaited debounce before reload!)
-    await flushSaveSettingsImmediate(ctx, params.saveSettingsImmediate);
+    await flushSaveSettingsImmediate(ctx, params.saveSettingsImmediate, hostMods);
+
+    // Refresh live SillyTavern host lists in-place when reload is not required
+    const requiresReload = preview.requiresReload && succeeded.length > 0;
+    if (!requiresReload) {
+        if (deletedCharRecords.length > 0 || deletedGroupIds.size > 0) {
+            try { await hostMods?.script?.getCharacters?.(); } catch {}
+        }
+        if (deletedPersonas.length > 0) {
+            try { await hostMods?.personas?.getUserAvatars?.(true); } catch {}
+        }
+    }
 
     // Invalidate affected categories in scanner session cache
     const affectedCategories = [...new Set(
@@ -1229,7 +1258,6 @@ export async function executeBatchDelete(params) {
     completedUnits = totalWorkUnits;
     emitProgress(3, '清理完成', '所有数据与引用已安全同步');
 
-    const requiresReload = preview.requiresReload && succeeded.length > 0;
     return {
         succeeded,
         skipped,
@@ -1244,13 +1272,17 @@ export async function executeBatchDelete(params) {
  * Primary path: dynamically imports `saveSettings` from SillyTavern's root `script.js`.
  * Fallback path: calls `ctx.saveSettingsDebounced()` and waits for settle window.
  */
-export async function flushSaveSettingsImmediate(ctx, injectedSaveFn) {
+export async function flushSaveSettingsImmediate(ctx, injectedSaveFn, hostMods) {
     if (typeof injectedSaveFn === 'function') {
         await injectedSaveFn();
         return;
     }
     if (typeof ctx?.saveSettings === 'function') {
         await ctx.saveSettings();
+        return;
+    }
+    if (typeof hostMods?.script?.saveSettings === 'function') {
+        await hostMods.script.saveSettings();
         return;
     }
     try {

@@ -757,6 +757,32 @@
   background: var(--stc-bg-card);
 }
 
+.st-cleaner-search-input::-webkit-search-cancel-button {
+  display: none !important;
+  -webkit-appearance: none;
+}
+
+.st-cleaner-root input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  border: 1.5px solid var(--stc-text-muted);
+  background: var(--stc-bg-input);
+  outline: none;
+  box-shadow: none;
+  filter: none;
+  margin: 0;
+}
+
+.st-cleaner-root input[type="checkbox"]:checked {
+  background: var(--stc-accent);
+  border-color: var(--stc-accent);
+}
+
+.st-cleaner-root input[type="checkbox"]::before {
+  box-shadow: inset 1em 1em #ffffff;
+}
+
 .st-cleaner-search-clear {
   position: absolute;
   right: 4px;

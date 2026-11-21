@@ -143,6 +143,39 @@ const DEFAULT_BUILTIN_PRESET_NAMES = new Set([
     'SimpleProxyForTavern',
 ]);
 
+let cachedHostModulesPromise = null;
+
+/**
+ * Lazily imports SillyTavern's live frontend ES modules (`world-info.js`, `personas.js`, `script.js`)
+ * when running inside a real SillyTavern browser tab so live unexported state (`selected_world_info`,
+ * `world_info`, `user_avatar`, `saveSettings`, `getCharacters`, `updateWorldInfoList`) stays 100% synced.
+ * Gracefully resolves to `{}` in standalone Node test environments.
+ */
+export function loadHostModules() {
+    if (cachedHostModulesPromise) return cachedHostModulesPromise;
+    cachedHostModulesPromise = (async () => {
+        const mods = { worldInfo: null, personas: null, script: null };
+        if (typeof window === 'undefined') return mods;
+        const tryImport = async (rel) => {
+            try {
+                return await import(new URL(rel, import.meta.url).href);
+            } catch {
+                return null;
+            }
+        };
+        const [wi, per, scr] = await Promise.all([
+            tryImport('../../../world-info.js'),
+            tryImport('../../../personas.js'),
+            tryImport('../../../../script.js'),
+        ]);
+        mods.worldInfo = wi;
+        mods.personas = per;
+        mods.script = scr;
+        return mods;
+    })();
+    return cachedHostModulesPromise;
+}
+
 /**
  * Resolves the runtime extension folder name from import.meta.url so self-exclusion
  * works even if the user cloned into a custom directory name.
@@ -266,6 +299,20 @@ export async function mapWithConcurrency(items, concurrency, worker, signal) {
  * @param {any} namesMapOrArr
  * @returns {{ name: string, data: any }[]}
  */
+export function parseMaybeJsonObject(val) {
+    if (!val) return {};
+    if (typeof val === 'object') return val;
+    if (typeof val === 'string') {
+        try {
+            const parsed = JSON.parse(val);
+            return parsed && typeof parsed === 'object' ? parsed : {};
+        } catch {
+            return {};
+        }
+    }
+    return {};
+}
+
 export function extractNamedPresets(settingsArr, namesMapOrArr) {
     const out = [];
     const seen = new Set();
@@ -274,8 +321,8 @@ export function extractNamedPresets(settingsArr, namesMapOrArr) {
         for (const [name, idx] of Object.entries(namesMapOrArr)) {
             if (!name || name === 'gui' || seen.has(name)) continue;
             seen.add(name);
-            const data = Array.isArray(settingsArr) ? settingsArr[Number(idx)] : undefined;
-            out.push({ name, data: data || {} });
+            const rawData = Array.isArray(settingsArr) ? settingsArr[Number(idx)] : undefined;
+            out.push({ name, data: parseMaybeJsonObject(rawData) });
         }
         return out;
     }
@@ -286,18 +333,21 @@ export function extractNamedPresets(settingsArr, namesMapOrArr) {
             const name = typeof entry === 'string' ? entry : entry?.name;
             if (!name || name === 'gui' || seen.has(name)) continue;
             seen.add(name);
-            const data = typeof entry === 'object' ? entry : (Array.isArray(settingsArr) ? settingsArr[i] : {});
-            out.push({ name, data: data || {} });
+            const rawData = typeof entry === 'object'
+                ? entry
+                : (Array.isArray(settingsArr) ? settingsArr[i] : {});
+            out.push({ name, data: parseMaybeJsonObject(rawData) });
         }
         return out;
     }
 
     if (Array.isArray(settingsArr)) {
         for (const entry of settingsArr) {
-            const name = typeof entry === 'string' ? entry : entry?.name;
+            const parsedEntry = typeof entry === 'string' ? parseMaybeJsonObject(entry) : entry;
+            const name = typeof entry === 'string' ? parsedEntry?.name : entry?.name;
             if (!name || name === 'gui' || seen.has(name)) continue;
             seen.add(name);
-            out.push({ name, data: typeof entry === 'object' ? entry : {} });
+            out.push({ name, data: typeof parsedEntry === 'object' && parsedEntry ? parsedEntry : {} });
         }
     }
     return out;
@@ -376,7 +426,11 @@ export function createScannerSession(options = {}) {
         if (settingsPromise && !force) return settingsPromise;
         settingsPromise = apiJson('api/settings/get', { method: 'POST', body: {}, signal })
             .then((data) => {
-                settingsSnapshot = data || {};
+                const normalized = data && typeof data === 'object' ? { ...data } : {};
+                if (typeof normalized.settings === 'string') {
+                    normalized.settings = parseMaybeJsonObject(normalized.settings);
+                }
+                settingsSnapshot = normalized;
                 settingsPromise = null;
                 return settingsSnapshot;
             })
@@ -468,7 +522,7 @@ export function createScannerSession(options = {}) {
     /**
      * Collects all worldbook binding relationships across global, characters, and personas.
      */
-    function collectWorldInfoBindings(ctx) {
+    function collectWorldInfoBindings(ctx, hostMods) {
         /** @type {Map<string, string[]>} worldName -> human-readable bound targets */
         const bindings = new Map();
         const addBinding = (worldName, label) => {
@@ -484,7 +538,8 @@ export function createScannerSession(options = {}) {
             }
         };
 
-        const globalWorlds = ctx?.worldInfo?.globalSelect
+        const globalWorlds = hostMods?.worldInfo?.selected_world_info
+            || ctx?.worldInfo?.globalSelect
             || ctx?.selected_world_info
             || settingsSnapshot?.settings?.world_info?.globalSelect
             || [];
@@ -502,7 +557,8 @@ export function createScannerSession(options = {}) {
             }
         }
 
-        const charLore = ctx?.worldInfo?.charLore
+        const charLore = hostMods?.worldInfo?.world_info?.charLore
+            || ctx?.worldInfo?.charLore
             || ctx?.world_info?.charLore
             || settingsSnapshot?.settings?.world_info?.charLore
             || [];
@@ -992,7 +1048,10 @@ export function createScannerSession(options = {}) {
 
     async function scanWorldInfoCategory(signal, onProgress) {
         await ensureCharactersUnshallowed(signal, onProgress);
-        const settingsData = await getSettingsSnapshot(signal);
+        const [settingsData, hostMods] = await Promise.all([
+            getSettingsSnapshot(signal),
+            loadHostModules(),
+        ]);
         const ctx = getContext();
         const characters = Array.isArray(ctx?.characters) ? ctx.characters : [];
         const activeCharIndex = ctx?.characterId !== undefined && ctx?.characterId !== null && ctx?.characterId !== ''
@@ -1000,17 +1059,21 @@ export function createScannerSession(options = {}) {
             : -1;
         const activeChar = activeCharIndex >= 0 ? characters[activeCharIndex] : null;
 
-        const rawNames = Array.isArray(ctx?.worldNames) && ctx.worldNames.length > 0
-            ? ctx.worldNames
-            : (Array.isArray(settingsData?.world_names) ? settingsData.world_names : []);
+        const liveWorldNames = hostMods?.worldInfo?.world_names;
+        const rawNames = Array.isArray(liveWorldNames) && liveWorldNames.length > 0
+            ? liveWorldNames
+            : (Array.isArray(ctx?.worldNames) && ctx.worldNames.length > 0
+                ? ctx.worldNames
+                : (Array.isArray(settingsData?.world_names) ? settingsData.world_names : []));
         const worldNames = [...new Set(rawNames.map(x => String(x || '').trim()).filter(Boolean))];
-        const bindings = collectWorldInfoBindings(ctx);
+        const bindings = collectWorldInfoBindings(ctx, hostMods);
 
-        const globalActiveSet = new Set(
-            Array.isArray(ctx?.worldInfo?.globalSelect)
-                ? ctx.worldInfo.globalSelect
-                : (Array.isArray(ctx?.selected_world_info) ? ctx.selected_world_info : []),
-        );
+        const globalActiveArr = hostMods?.worldInfo?.selected_world_info
+            || ctx?.worldInfo?.globalSelect
+            || ctx?.selected_world_info
+            || settingsData?.settings?.world_info?.globalSelect
+            || [];
+        const globalActiveSet = new Set(Array.isArray(globalActiveArr) ? globalActiveArr : []);
         const activeCharWorld = activeChar?.data?.extensions?.world || '';
 
         const unboundItems = [];
@@ -1240,10 +1303,11 @@ export function createScannerSession(options = {}) {
         const powerUser = ctx?.powerUserSettings || ctx?.power_user || {};
         const chatMeta = ctx?.chatMetadata || ctx?.chat_metadata || {};
 
-        const [avatarsRes, bgsRes, settingsData] = await Promise.all([
+        const [avatarsRes, bgsRes, settingsData, hostMods] = await Promise.all([
             apiJson('api/avatars/get', { method: 'POST', body: {}, signal }).catch(() => []),
             apiJson('api/backgrounds/all', { method: 'POST', body: {}, signal }).catch(() => []),
             getSettingsSnapshot(signal),
+            loadHostModules(),
         ]);
 
         // 1. User Personas
@@ -1254,7 +1318,7 @@ export function createScannerSession(options = {}) {
             }
         }
 
-        const activePersona = ctx?.userAvatar || settingsData?.settings?.user_avatar || chatMeta?.persona || '';
+        const activePersona = hostMods?.personas?.user_avatar || ctx?.userAvatar || settingsData?.settings?.user_avatar || chatMeta?.persona || '';
         const defaultPersona = powerUser?.default_persona || '';
         const personaItems = [];
         for (const avatarFile of avatarSet) {
@@ -1393,14 +1457,16 @@ export function createScannerSession(options = {}) {
         const pushAttachment = (att, scope, ownerKey, ownerLabel, isActive) => {
             if (!att?.url) return;
             const url = String(att.url);
-            // Server files/delete expects basename inside user/files
-            const fileName = url.split('/').pop() || url;
+            const baseName = url.replace(/\\/g, '/').split('/').pop() || '';
+            if (!baseName) return;
+            // SillyTavern's POST api/files/delete resolves relative to user root (`user/files/<name>`)
+            const serverRelPath = `user/files/${baseName}`;
             databankItems.push(registerItem({
                 key: `databank:${scope}::${ownerKey}::${url}`,
                 categoryId: 'media',
                 subgroupId: 'databank',
-                title: String(att.name || fileName),
-                subtitle: `${ownerLabel} · 文件: ${fileName}${att.size ? ` · ${Math.round(Number(att.size) / 1024)} KB` : ''}`,
+                title: String(att.name || baseName),
+                subtitle: `${ownerLabel} · 文件: ${baseName}${att.size ? ` · ${Math.max(1, Math.round(Number(att.size) / 1024))} KB` : ''}`,
                 sizeBytes: Number(att.size) || 0,
                 isActive,
                 badges: [
@@ -1412,8 +1478,8 @@ export function createScannerSession(options = {}) {
                     scope,
                     ownerKey,
                     url,
-                    filePath: fileName,
-                    name: String(att.name || fileName),
+                    filePath: serverRelPath,
+                    name: String(att.name || baseName),
                 },
             }));
         };
