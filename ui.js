@@ -31,7 +31,7 @@ import {
 const GROUP_ROW_HEIGHT = 40;
 const ITEM_ROW_HEIGHT = 56;
 const GROUP_BOTTOM_GAP = 8;
-const OVERSCAN_PX = 280;
+const OVERSCAN_PX = 336;
 
 const NAME_COLLATOR = typeof Intl !== 'undefined' && typeof Intl.Collator === 'function'
     ? new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' })
@@ -500,7 +500,7 @@ export function openCleanerModal(options = {}) {
                     <span class="st-cleaner-nav-icon"><i class="fa-solid fa-table-cells-large"></i></span>
                     <span class="st-cleaner-nav-label">数据总览</span>
                 </span>
-                <span class="st-cleaner-nav-right">
+                <span class="st-cleaner-nav-right" data-nav-right="__overview__">
                     ${totalSelected > 0 ? `<span class="st-cleaner-nav-badge">${totalSelected}</span>` : ''}
                 </span>
             </button>
@@ -524,7 +524,7 @@ export function openCleanerModal(options = {}) {
                         <span class="st-cleaner-nav-icon"><i class="${escapeHtml(def.icon)}"></i></span>
                         <span class="st-cleaner-nav-label">${escapeHtml(def.label)}</span>
                     </span>
-                    <span class="st-cleaner-nav-right">
+                    <span class="st-cleaner-nav-right" data-nav-right="${escapeHtml(def.id)}">
                         ${selCount > 0
                             ? `<span class="st-cleaner-nav-badge">${selCount}</span>`
                             : (countLabel !== '' ? `<span class="st-cleaner-nav-count">${escapeHtml(countLabel)}</span>` : '')}
@@ -535,6 +535,39 @@ export function openCleanerModal(options = {}) {
 
         refs.sidebar.innerHTML = overviewNavHtml + catItemsHtml;
 
+        if (refs.mobileCatDot) {
+            const otherCatSelected = totalSelected - (selectedByCat.get(state.activeCategory) || 0);
+            refs.mobileCatDot.hidden = otherCatSelected <= 0;
+        }
+    }
+
+    /**
+     * Lightweight O(9) in-place badge update on checkbox taps without rebuilding sidebar DOM.
+     */
+    function updateNavigationBadgesInPlace() {
+        const rightSlots = refs.sidebar.querySelectorAll('[data-nav-right]');
+        if (rightSlots.length === 0) {
+            renderNavigation();
+            return;
+        }
+        const overviewSummary = scanner.getOverviewSummary();
+        const selectedByCat = countSelectedByCategory();
+        const totalSelected = state.selectedKeys.size;
+
+        for (const slot of rightSlots) {
+            const key = slot.dataset.navRight;
+            if (key === '__overview__') {
+                slot.innerHTML = totalSelected > 0 ? `<span class="st-cleaner-nav-badge">${totalSelected}</span>` : '';
+            } else if (key) {
+                const selCount = selectedByCat.get(key) || 0;
+                if (selCount > 0) {
+                    slot.innerHTML = `<span class="st-cleaner-nav-badge">${selCount}</span>`;
+                } else {
+                    const countLabel = formatCategoryCountBadge(overviewSummary[key], '');
+                    slot.innerHTML = countLabel !== '' ? `<span class="st-cleaner-nav-count">${escapeHtml(countLabel)}</span>` : '';
+                }
+            }
+        }
         if (refs.mobileCatDot) {
             const otherCatSelected = totalSelected - (selectedByCat.get(state.activeCategory) || 0);
             refs.mobileCatDot.hidden = otherCatSelected <= 0;
@@ -1095,13 +1128,52 @@ export function openCleanerModal(options = {}) {
         refs.windowEl.innerHTML = htmlChunks.join('');
     }
 
-    function updateFooterBar() {
-        const preview = buildDeletionPreview(state.selectedKeys, scanner, {
-            skipActive: state.skipActive,
-        });
+    /**
+     * Updates visible `.st-cleaner-vgroup-btn` labels in-place without tearing down virtual item rows,
+     * preserving smooth CSS checkbox transitions on single-item taps.
+     */
+    function updateVisibleGroupButtonsInPlace() {
+        const groupBtns = refs.windowEl.querySelectorAll('.st-cleaner-vgroup-btn[data-row-idx]');
+        for (const btn of groupBtns) {
+            const idx = Number(btn.dataset.rowIdx);
+            const row = state.flatRows[idx];
+            if (!row || row.type !== 'group') continue;
+            const selectablePool = state.skipActive
+                ? row.items.filter(it => !it.isActive && !it.isCritical)
+                : row.items;
+            const anyCheckedInGroup = row.items.some(it => state.selectedKeys.has(it.key));
+            const allGroupSelected = selectablePool.length > 0
+                ? selectablePool.every(it => state.selectedKeys.has(it.key))
+                : anyCheckedInGroup;
+            const isAllProtected = state.skipActive && selectablePool.length === 0 && !anyCheckedInGroup;
+            btn.disabled = isAllProtected;
+            btn.textContent = isAllProtected ? '均受保护' : (allGroupSelected ? '取消本组' : '全选本组');
+        }
+    }
+
+    /**
+     * Fast zero-allocation selection counter for `updateFooterBar()` so single-row taps
+     * never construct full deletion preview maps/arrays until confirmation opens.
+     */
+    function computeSelectionCounts() {
         const rawTotal = state.selectedKeys.size;
-        const execCount = preview.validItems.length;
-        const skippedCount = preview.skippedActiveItems.length;
+        if (rawTotal === 0) return { rawTotal: 0, execCount: 0, skippedCount: 0 };
+        let execCount = 0;
+        let skippedCount = 0;
+        for (const key of state.selectedKeys) {
+            const item = scanner.whitelistMap.get(key);
+            if (!item) continue;
+            if (state.skipActive && (item.isActive || item.isCritical)) {
+                skippedCount++;
+            } else {
+                execCount++;
+            }
+        }
+        return { rawTotal, execCount, skippedCount };
+    }
+
+    function updateFooterBar() {
+        const { rawTotal, execCount, skippedCount } = computeSelectionCounts();
 
         if (rawTotal === 0) {
             refs.selectedCountText.textContent = '已选 0 项';
@@ -1131,16 +1203,44 @@ export function openCleanerModal(options = {}) {
         if (state.scanAbort) state.scanAbort.abort();
         if (state.indexAbort) state.indexAbort.abort();
 
+        const targetCat = state.activeCategory;
+        if (!force) {
+            const cached = scanner.getCachedCategory(targetCat);
+            if (cached) {
+                currentCategoryRecord = cached;
+                refs.scanBanner.hidden = true;
+                renderNavigation();
+                renderSubpills(cached);
+                rebuildVirtualRows(cached);
+                updateFooterBar();
+                return;
+            }
+        }
+
         const scanController = new AbortController();
         state.scanAbort = scanController;
+        let renderedPartialForCat = false;
 
         refs.scanBanner.hidden = false;
         refs.scanBanner.innerHTML = `<span><i class="fa-solid fa-spinner fa-spin"></i> 正在扫描分类数据...</span>`;
 
         try {
-            const record = await scanner.scanCategory(state.activeCategory, {
+            const record = await scanner.scanCategory(targetCat, {
                 force,
                 signal: scanController.signal,
+                onPartial: (partialRecord) => {
+                    if (scanController.signal.aborted || state.activeCategory !== targetCat) return;
+                    const prevScrollTop = renderedPartialForCat ? refs.viewport.scrollTop : 0;
+                    renderedPartialForCat = true;
+                    currentCategoryRecord = partialRecord;
+                    renderSubpills(partialRecord);
+                    rebuildVirtualRows(partialRecord);
+                    if (prevScrollTop > 0) {
+                        refs.viewport.scrollTop = prevScrollTop;
+                        renderVisibleVirtualWindow(true);
+                    }
+                    updateFooterBar();
+                },
                 onProgress: (msg) => {
                     if (!scanController.signal.aborted) {
                         refs.scanBanner.innerHTML = `<span><i class="fa-solid fa-spinner fa-spin"></i> ${escapeHtml(msg)}</span>`;
@@ -1148,13 +1248,18 @@ export function openCleanerModal(options = {}) {
                 },
             });
 
-            if (scanController.signal.aborted) return;
+            if (scanController.signal.aborted || state.activeCategory !== targetCat) return;
+            const prevScrollTop = renderedPartialForCat ? refs.viewport.scrollTop : 0;
             currentCategoryRecord = record;
             refs.scanBanner.hidden = true;
 
             renderNavigation();
             renderSubpills(record);
             rebuildVirtualRows(record);
+            if (prevScrollTop > 0) {
+                refs.viewport.scrollTop = prevScrollTop;
+                renderVisibleVirtualWindow(true);
+            }
             updateFooterBar();
             if (state.activeTab === 'overview') {
                 renderOverview();
@@ -1219,7 +1324,18 @@ export function openCleanerModal(options = {}) {
                 onProgress: (msg) => {
                     if (!ctrl.signal.aborted) {
                         state.deepScanText = msg.replace(/^正在深度体检\s*/, '体检 ');
-                        if (state.activeTab === 'overview') renderOverview();
+                        if (state.activeTab === 'overview') {
+                            const btn = refs.bootCard.querySelector('[data-action="run-deep-diag"]');
+                            if (btn) {
+                                btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> ${escapeHtml(state.deepScanText)}`;
+                            }
+                        }
+                    }
+                },
+                onCategoryDone: () => {
+                    if (!ctrl.signal.aborted && state.activeTab === 'overview') {
+                        renderOverview();
+                        renderNavigation();
                     }
                 },
             });
@@ -1583,6 +1699,7 @@ export function openCleanerModal(options = {}) {
         };
 
         let report;
+        let lastDelProgTs = 0;
         try {
             report = await executeBatchDelete({
                 selectedKeys: state.selectedKeys,
@@ -1593,6 +1710,11 @@ export function openCleanerModal(options = {}) {
                 saveSettingsImmediate: options.saveSettingsImmediate,
                 requestTimeoutMs: options.requestTimeoutMs,
                 onProgress: (prog) => {
+                    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+                    if (prog.percent < 100 && prog.completed > 1 && now - lastDelProgTs < 32) {
+                        return;
+                    }
+                    lastDelProgTs = now;
                     if (pctEl) pctEl.textContent = `${prog.percent}%`;
                     if (barEl) barEl.style.width = `${Math.max(4, prog.percent)}%`;
                     if (opEl) opEl.textContent = `${prog.stageLabel} · ${prog.currentTitle} (${prog.completed}/${prog.total})`;
@@ -1682,9 +1804,18 @@ export function openCleanerModal(options = {}) {
     // =========================================================================
     // Event Delegation & Lifecycle Management
     // =========================================================================
+    let scrollRafId = 0;
     refs.viewport.addEventListener('scroll', () => {
-        hidePopover();
-        renderVisibleVirtualWindow(false);
+        if (!popover.hidden) hidePopover();
+        if (scrollRafId) return;
+        if (typeof requestAnimationFrame === 'function') {
+            scrollRafId = requestAnimationFrame(() => {
+                scrollRafId = 0;
+                if (!isDisposed) renderVisibleVirtualWindow(false);
+            });
+        } else {
+            renderVisibleVirtualWindow(false);
+        }
     }, { passive: true });
 
     let resizeObserver = null;
@@ -1706,11 +1837,17 @@ export function openCleanerModal(options = {}) {
         const val = refs.searchInput.value || '';
         refs.searchClear.hidden = val.length === 0;
         clearTimeout(state.searchDebounceTimer);
-        state.searchDebounceTimer = setTimeout(() => {
+        const applySearch = () => {
             state.searchQuery = val;
             refs.viewport.scrollTop = 0;
             rebuildVirtualRows(currentCategoryRecord);
-        }, 120);
+        };
+        const totalItems = currentCategoryRecord?.totalCount || 0;
+        if (totalItems <= 400) {
+            applySearch();
+        } else {
+            state.searchDebounceTimer = setTimeout(applySearch, 80);
+        }
     });
 
     refs.sortSelect.addEventListener('change', () => {
@@ -1990,8 +2127,8 @@ export function openCleanerModal(options = {}) {
                     state.selectedKeys.add(key);
                     actionEl.classList.add('is-checked');
                 }
-                renderVisibleVirtualWindow(true);
-                renderNavigation();
+                updateVisibleGroupButtonsInPlace();
+                updateNavigationBadgesInPlace();
                 updateFooterBar();
                 break;
             }
@@ -2052,6 +2189,10 @@ export function openCleanerModal(options = {}) {
         if (state.scanAbort) state.scanAbort.abort();
         if (state.diagAbort) state.diagAbort.abort();
         if (state.indexAbort) state.indexAbort.abort();
+        if (scrollRafId && typeof cancelAnimationFrame === 'function') {
+            cancelAnimationFrame(scrollRafId);
+            scrollRafId = 0;
+        }
         clearTimeout(state.searchDebounceTimer);
         resizeObserver?.disconnect();
         document.removeEventListener('keydown', onKeyDown);

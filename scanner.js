@@ -550,6 +550,53 @@ export function extractNamedPresets(settingsArr, namesMapOrArr) {
     return out;
 }
 
+export function countNamedPresetsFast(settingsArr, namesMapOrArr) {
+    const seen = new Set();
+    if (namesMapOrArr && typeof namesMapOrArr === 'object' && !Array.isArray(namesMapOrArr)) {
+        for (const name of Object.keys(namesMapOrArr)) {
+            if (name && name !== 'gui') seen.add(name);
+        }
+        return seen.size;
+    }
+    if (Array.isArray(namesMapOrArr)) {
+        for (let i = 0; i < namesMapOrArr.length; i++) {
+            const entry = namesMapOrArr[i];
+            const name = typeof entry === 'string'
+                ? (namesMapOrArr === settingsArr && entry.trim().startsWith('{') ? parseMaybeJsonObject(entry)?.name : entry)
+                : entry?.name;
+            if (name && name !== 'gui') seen.add(name);
+        }
+        return seen.size;
+    }
+    if (Array.isArray(settingsArr)) {
+        for (let i = 0; i < settingsArr.length; i++) {
+            const entry = settingsArr[i];
+            const name = typeof entry === 'string' ? parseMaybeJsonObject(entry)?.name : entry?.name;
+            if (name && name !== 'gui') seen.add(name);
+        }
+    }
+    return seen.size;
+}
+
+function getCachedNamedPresets(settingsData, cacheKey, settingsArr, namesMapOrArr) {
+    if (!settingsData || typeof settingsData !== 'object') {
+        return extractNamedPresets(settingsArr, namesMapOrArr);
+    }
+    if (!settingsData.__presetCache) {
+        Object.defineProperty(settingsData, '__presetCache', {
+            value: new Map(),
+            enumerable: false,
+            configurable: true,
+        });
+    }
+    if (settingsData.__presetCache.has(cacheKey)) {
+        return settingsData.__presetCache.get(cacheKey);
+    }
+    const parsed = extractNamedPresets(settingsArr, namesMapOrArr);
+    settingsData.__presetCache.set(cacheKey, parsed);
+    return parsed;
+}
+
 export const BUILTIN_COMFY_WORKFLOWS = new Set([
     'Default_Comfy_Workflow.json',
     'Char_Avatar_Comfy_Workflow.json',
@@ -716,10 +763,23 @@ export function createScannerSession(options = {}) {
 
     let settingsSnapshot = null;
     let settingsPromise = null;
+    let overviewSummaryCache = null;
     let unshallowDone = false;
     let dataMaidToken = null;
     let dataMaidAvailable = null;
     const requestTimeoutMs = Number(options.requestTimeoutMs) > 0 ? Number(options.requestTimeoutMs) : 15000;
+
+    function createThrottledProgress(onProgress, intervalMs = 60) {
+        if (typeof onProgress !== 'function') return null;
+        let lastTs = 0;
+        return (msg, forceFlush = false) => {
+            const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+            if (forceFlush || now - lastTs >= intervalMs) {
+                lastTs = now;
+                onProgress(msg);
+            }
+        };
+    }
 
     function getHeaders(ctx) {
         try {
@@ -805,6 +865,7 @@ export function createScannerSession(options = {}) {
                         normalized.settings = parseMaybeJsonObject(normalized.settings);
                     }
                     settingsSnapshot = normalized;
+                    overviewSummaryCache = null;
                     settingsPromise = null;
                     return settingsSnapshot;
                 })
@@ -855,6 +916,7 @@ export function createScannerSession(options = {}) {
 
         if (shallowIndexes.length > 0) {
             let done = 0;
+            const emitProg = createThrottledProgress(onProgress, 60);
             await mapWithConcurrency(shallowIndexes, 4, async (charIdx) => {
                 const charObj = characters[charIdx];
                 if (!charObj || !charObj.shallow) return;
@@ -879,8 +941,9 @@ export function createScannerSession(options = {}) {
                     // Keep existing partial entry rather than aborting entire scan
                 }
                 done++;
-                onProgress?.(`正在补全懒加载角色卡数据 (${done}/${shallowIndexes.length})...`);
+                emitProg?.(`正在补全懒加载角色卡数据 (${done}/${shallowIndexes.length})...`, done === shallowIndexes.length);
             }, signal);
+            overviewSummaryCache = null;
         }
 
         if (!signal?.aborted) {
@@ -1012,10 +1075,16 @@ export function createScannerSession(options = {}) {
         const ctx = getContext();
         const characters = Array.isArray(ctx?.characters) ? ctx.characters : [];
         const groups = Array.isArray(ctx?.groups) ? ctx.groups : [];
+        const cacheKeySig = `${characters.length}:${groups.length}:${categoryCache.size}:${Boolean(settingsSnapshot)}`;
+        if (overviewSummaryCache && overviewSummaryCache.__sig === cacheKeySig) {
+            return overviewSummaryCache;
+        }
+
         const extSettings = ctx?.extensionSettings || ctx?.extension_settings || {};
         const powerUser = ctx?.powerUserSettings || ctx?.power_user || {};
 
         const summary = {};
+        Object.defineProperty(summary, '__sig', { value: cacheKeySig, enumerable: false });
         for (const def of CATEGORY_DEFS) {
             const cached = categoryCache.get(def.id);
             if (cached) {
@@ -1069,14 +1138,14 @@ export function createScannerSession(options = {}) {
                 }
                 case 'presets': {
                     if (settingsSnapshot) {
-                        const oai = extractNamedPresets(settingsSnapshot.openai_settings, settingsSnapshot.openai_setting_names).length;
-                        const tgw = extractNamedPresets(settingsSnapshot.textgenerationwebui_presets, settingsSnapshot.textgenerationwebui_preset_names).length;
-                        const ins = extractNamedPresets(settingsSnapshot.instruct, settingsSnapshot.instruct).length;
-                        const cxt = extractNamedPresets(settingsSnapshot.context, settingsSnapshot.context).length;
-                        const sys = extractNamedPresets(settingsSnapshot.sysprompt, settingsSnapshot.sysprompt).length;
-                        const rsn = extractNamedPresets(settingsSnapshot.reasoning, settingsSnapshot.reasoning).length;
-                        const nai = extractNamedPresets(settingsSnapshot.novelai_settings, settingsSnapshot.novelai_setting_names).length;
-                        const kob = extractNamedPresets(settingsSnapshot.koboldai_settings, settingsSnapshot.koboldai_setting_names).length;
+                        const oai = countNamedPresetsFast(settingsSnapshot.openai_settings, settingsSnapshot.openai_setting_names);
+                        const tgw = countNamedPresetsFast(settingsSnapshot.textgenerationwebui_presets, settingsSnapshot.textgenerationwebui_preset_names);
+                        const ins = countNamedPresetsFast(settingsSnapshot.instruct, settingsSnapshot.instruct);
+                        const cxt = countNamedPresetsFast(settingsSnapshot.context, settingsSnapshot.context);
+                        const sys = countNamedPresetsFast(settingsSnapshot.sysprompt, settingsSnapshot.sysprompt);
+                        const rsn = countNamedPresetsFast(settingsSnapshot.reasoning, settingsSnapshot.reasoning);
+                        const nai = countNamedPresetsFast(settingsSnapshot.novelai_settings, settingsSnapshot.novelai_setting_names);
+                        const kob = countNamedPresetsFast(settingsSnapshot.koboldai_settings, settingsSnapshot.koboldai_setting_names);
                         approx = oai + tgw + ins + cxt + sys + rsn + nai + kob;
                     }
                     break;
@@ -1114,6 +1183,7 @@ export function createScannerSession(options = {}) {
                 badgeText: approx !== null ? `${approx}${def.id === 'personas' || def.id === 'media' || def.id === 'regex' ? '+' : ''} 项` : '点击扫描',
             };
         }
+        overviewSummaryCache = summary;
         return summary;
     }
 
@@ -1121,7 +1191,7 @@ export function createScannerSession(options = {}) {
     // Category Scanners (1 - 9)
     // =========================================================================
 
-    async function scanCharactersCategory(signal) {
+    async function scanCharactersCategory(signal, onProgress, onPartialGroups) {
         const ctx = getContext();
         const characters = Array.isArray(ctx?.characters) ? ctx.characters : [];
         const groups = Array.isArray(ctx?.groups) ? ctx.groups : [];
@@ -1137,10 +1207,21 @@ export function createScannerSession(options = {}) {
                 .map(t => [t.id, t.name]),
         );
 
+        // O(G) pre-indexed group membership counter instead of O(C * G * M)
+        const groupCountByAvatar = new Map();
+        for (const g of groups) {
+            if (!Array.isArray(g?.members)) continue;
+            for (const memberAvatar of g.members) {
+                if (memberAvatar) {
+                    groupCountByAvatar.set(memberAvatar, (groupCountByAvatar.get(memberAvatar) || 0) + 1);
+                }
+            }
+        }
+
         const charItems = [];
         for (const ch of characters) {
             if (!ch?.avatar) continue;
-            const inGroups = groups.filter(g => Array.isArray(g?.members) && g.members.includes(ch.avatar));
+            const groupRefCount = groupCountByAvatar.get(ch.avatar) || 0;
             const rawTagIds = Array.isArray(tagMap[ch.avatar]) ? tagMap[ch.avatar] : [];
             const validTagIds = rawTagIds.filter(id => tagsById.has(id));
             const tagLabels = validTagIds.map(id => tagsById.get(id)).filter(Boolean);
@@ -1164,8 +1245,8 @@ export function createScannerSession(options = {}) {
             const isActive = ch.avatar === activeCharAvatar;
             const facets = [isBuiltin ? 'src:builtin' : 'src:user'];
             if (isFav) facets.push('char:fav');
-            if (inGroups.length > 0) facets.push('char:ingroup');
-            if (!isActive && !isFav && inGroups.length === 0) facets.push('char:idle');
+            if (groupRefCount > 0) facets.push('char:ingroup');
+            if (!isActive && !isFav && groupRefCount === 0) facets.push('char:idle');
             if (validTagIds.length > 0) {
                 for (const tid of validTagIds) facets.push(`tag:${tid}`);
             } else {
@@ -1180,7 +1261,7 @@ export function createScannerSession(options = {}) {
                 subtitle: subtitleParts.join(' · '),
                 sizeBytes: chatSizeBytes,
                 sortTimeMs,
-                sortMetric: chatSizeBytes || (inGroups.length + scopedRegexCount),
+                sortMetric: chatSizeBytes || (groupRefCount + scopedRegexCount),
                 isActive,
                 isCaution: isFav,
                 facets,
@@ -1188,7 +1269,7 @@ export function createScannerSession(options = {}) {
                     ...(isActive ? [{ text: '正在使用', type: 'active' }] : []),
                     ...(isFav ? [{ text: '★ 收藏', type: 'fav' }] : []),
                     ...(isBuiltin ? [{ text: '官方自带', type: 'builtin' }] : []),
-                    ...(inGroups.length > 0 ? [{ text: `群成员×${inGroups.length}`, type: 'info' }] : []),
+                    ...(groupRefCount > 0 ? [{ text: `群成员×${groupRefCount}`, type: 'info' }] : []),
                     ...tagLabels.slice(0, 2).map(t => ({ text: `#${t}`, type: 'tag' })),
                     ...(tagLabels.length > 2 ? [{ text: `+${tagLabels.length - 2}`, type: 'muted' }] : []),
                 ],
@@ -1201,8 +1282,51 @@ export function createScannerSession(options = {}) {
             }));
         }
 
+        const groupItems = [];
+        for (const g of groups) {
+            if (!g?.id) continue;
+            const memberCount = Array.isArray(g.members) ? g.members.length : 0;
+            const chatCount = Array.isArray(g.chats) ? g.chats.length : 0;
+            const isActive = String(g.id) === String(activeGroupId);
+            const isFav = Boolean(g.fav === true || g.fav === 'true');
+            groupItems.push(registerItem({
+                key: `group:${g.id}`,
+                categoryId: 'characters',
+                subgroupId: 'groups',
+                title: String(g.name || `群聊 ${g.id}`),
+                subtitle: `ID: ${g.id} · ${memberCount} 位成员 · ${chatCount} 条会话`,
+                sizeBytes: 0,
+                sortTimeMs: parseTavernTimestamp(g.date_last_chat || g.date_added, g.chat_id || ''),
+                sortMetric: chatCount * 10 + memberCount,
+                isActive,
+                isCaution: isFav,
+                facets: ['src:user', ...(isFav ? ['char:fav'] : [])],
+                badges: [
+                    ...(isActive ? [{ text: '正在使用', type: 'active' }] : []),
+                    ...(isFav ? [{ text: '★ 收藏', type: 'fav' }] : []),
+                    { text: `${chatCount} 会话`, type: 'muted' },
+                ],
+                payload: {
+                    kind: 'group',
+                    id: g.id,
+                    name: String(g.name || g.id),
+                },
+            }));
+        }
+
+        // Instant <2ms First-Paint: stream in-memory character cards & groups immediately before network sprite checks!
+        if (typeof onPartialGroups === 'function' && (charItems.length > 0 || groupItems.length > 0)) {
+            onPartialGroups([
+                { id: 'char_cards', label: '角色卡', items: charItems },
+                { id: 'char_sprites', label: '角色立绘表情包', items: [] },
+                { id: 'groups', label: '群聊房间', items: groupItems },
+            ]);
+        }
+
         // 2. Standalone Character Expression Sprite Packs (`GET api/sprites/get?name=<dir>`)
         const spritePackItems = [];
+        let checkedSprites = 0;
+        const emitSpriteProg = createThrottledProgress(onProgress, 60);
         await mapWithConcurrency(characters, 5, async (ch) => {
             if (!ch?.avatar) return;
             const spriteDirName = stripExt(ch.avatar, '.png');
@@ -1254,40 +1378,13 @@ export function createScannerSession(options = {}) {
                 }));
             } catch {
                 // Non-fatal if sprites endpoint unavailable
+            } finally {
+                checkedSprites++;
+                if (characters.length >= 12) {
+                    emitSpriteProg?.(`正在后台检测角色独立立绘包 (${checkedSprites}/${characters.length})...`, checkedSprites === characters.length);
+                }
             }
         }, signal);
-
-        const groupItems = [];
-        for (const g of groups) {
-            if (!g?.id) continue;
-            const memberCount = Array.isArray(g.members) ? g.members.length : 0;
-            const chatCount = Array.isArray(g.chats) ? g.chats.length : 0;
-            const isActive = String(g.id) === String(activeGroupId);
-            const isFav = Boolean(g.fav === true || g.fav === 'true');
-            groupItems.push(registerItem({
-                key: `group:${g.id}`,
-                categoryId: 'characters',
-                subgroupId: 'groups',
-                title: String(g.name || `群聊 ${g.id}`),
-                subtitle: `ID: ${g.id} · ${memberCount} 位成员 · ${chatCount} 条会话`,
-                sizeBytes: 0,
-                sortTimeMs: parseTavernTimestamp(g.date_last_chat || g.date_added, g.chat_id || ''),
-                sortMetric: chatCount * 10 + memberCount,
-                isActive,
-                isCaution: isFav,
-                facets: ['src:user', ...(isFav ? ['char:fav'] : [])],
-                badges: [
-                    ...(isActive ? [{ text: '正在使用', type: 'active' }] : []),
-                    ...(isFav ? [{ text: '★ 收藏', type: 'fav' }] : []),
-                    { text: `${chatCount} 会话`, type: 'muted' },
-                ],
-                payload: {
-                    kind: 'group',
-                    id: g.id,
-                    name: String(g.name || g.id),
-                },
-            }));
-        }
 
         if (signal?.aborted) throw new DOMException('Scan aborted', 'AbortError');
         return [
@@ -1297,7 +1394,7 @@ export function createScannerSession(options = {}) {
         ];
     }
 
-    async function scanChatsCategory(signal, onProgress) {
+    async function scanChatsCategory(signal, onProgress, onPartialGroups) {
         const ctx = getContext();
         const characters = Array.isArray(ctx?.characters) ? ctx.characters : [];
         const groups = Array.isArray(ctx?.groups) ? ctx.groups : [];
@@ -1313,10 +1410,55 @@ export function createScannerSession(options = {}) {
                 .map(t => t.id),
         );
 
+        const groupChatItems = [];
+        for (const g of groups) {
+            if (!g?.id || !Array.isArray(g.chats)) continue;
+            const isGroupSelected = String(g.id) === String(activeGroupId);
+            for (const chatId of g.chats) {
+                const cid = String(chatId || '').trim();
+                if (!cid) continue;
+                const isGroupDefault = String(g.chat_id) === cid;
+                const isActive = isGroupSelected && isGroupDefault;
+                const gChatTimeMs = parseTavernTimestamp(cid);
+                const gChatDate = formatShortDate(gChatTimeMs);
+                groupChatItems.push(registerItem({
+                    key: `group_chat:${g.id}::${cid}`,
+                    categoryId: 'chats',
+                    subgroupId: 'group_chats',
+                    title: `${g.name || g.id} — ${cid}`,
+                    subtitle: `${gChatDate ? `记录: ${gChatDate} · ` : ''}仅清理此会话（保留群聊房间）`,
+                    sizeBytes: 0,
+                    sortTimeMs: gChatTimeMs,
+                    isActive,
+                    facets: [isGroupDefault ? 'chat:current_default' : 'chat:branch'],
+                    badges: [
+                        ...(isActive
+                            ? [{ text: '正在使用', type: 'active' }]
+                            : (isGroupDefault ? [{ text: '群聊主会话', type: 'info' }] : [{ text: '历史分支', type: 'muted' }])),
+                    ],
+                    payload: {
+                        kind: 'group_chat',
+                        groupId: g.id,
+                        groupName: g.name || String(g.id),
+                        chatId: cid,
+                    },
+                }));
+            }
+        }
+
         const charChatItems = [];
         let scannedChars = 0;
+        const emitProg = createThrottledProgress(onProgress, 60);
+        let lastPartialTs = typeof performance !== 'undefined' ? performance.now() : Date.now();
 
-        await mapWithConcurrency(characters, 5, async (ch) => {
+        if (typeof onPartialGroups === 'function' && groupChatItems.length > 0) {
+            onPartialGroups([
+                { id: 'char_chats', label: '角色单聊会话', items: [] },
+                { id: 'group_chats', label: '群聊单条会话', items: groupChatItems },
+            ]);
+        }
+
+        await mapWithConcurrency(characters, 6, async (ch) => {
             if (!ch?.avatar) return;
             try {
                 const list = await apiJson('api/characters/chats', {
@@ -1382,46 +1524,18 @@ export function createScannerSession(options = {}) {
                 // Character with no chat directory or error is safely skipped
             }
             scannedChars++;
-            if (scannedChars % 5 === 0 || scannedChars === characters.length) {
-                onProgress?.(`正在扫描角色聊天会话 (${scannedChars}/${characters.length})...`);
+            emitProg?.(`正在扫描角色聊天会话 (${scannedChars}/${characters.length})...`, scannedChars === characters.length);
+            if (typeof onPartialGroups === 'function' && charChatItems.length > 0 && scannedChars < characters.length) {
+                const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+                if (now - lastPartialTs >= 140) {
+                    lastPartialTs = now;
+                    onPartialGroups([
+                        { id: 'char_chats', label: '角色单聊会话', items: charChatItems.slice() },
+                        { id: 'group_chats', label: '群聊单条会话', items: groupChatItems },
+                    ]);
+                }
             }
         }, signal);
-
-        const groupChatItems = [];
-        for (const g of groups) {
-            if (!g?.id || !Array.isArray(g.chats)) continue;
-            const isGroupSelected = String(g.id) === String(activeGroupId);
-            for (const chatId of g.chats) {
-                const cid = String(chatId || '').trim();
-                if (!cid) continue;
-                const isGroupDefault = String(g.chat_id) === cid;
-                const isActive = isGroupSelected && isGroupDefault;
-                const gChatTimeMs = parseTavernTimestamp(cid);
-                const gChatDate = formatShortDate(gChatTimeMs);
-                groupChatItems.push(registerItem({
-                    key: `group_chat:${g.id}::${cid}`,
-                    categoryId: 'chats',
-                    subgroupId: 'group_chats',
-                    title: `${g.name || g.id} — ${cid}`,
-                    subtitle: `${gChatDate ? `记录: ${gChatDate} · ` : ''}仅清理此会话（保留群聊房间）`,
-                    sizeBytes: 0,
-                    sortTimeMs: gChatTimeMs,
-                    isActive,
-                    facets: [isGroupDefault ? 'chat:current_default' : 'chat:branch'],
-                    badges: [
-                        ...(isActive
-                            ? [{ text: '正在使用', type: 'active' }]
-                            : (isGroupDefault ? [{ text: '群聊主会话', type: 'info' }] : [{ text: '历史分支', type: 'muted' }])),
-                    ],
-                    payload: {
-                        kind: 'group_chat',
-                        groupId: g.id,
-                        groupName: g.name || String(g.id),
-                        chatId: cid,
-                    },
-                }));
-            }
-        }
 
         return [
             { id: 'char_chats', label: '角色单聊会话', items: charChatItems },
@@ -1517,13 +1631,13 @@ export function createScannerSession(options = {}) {
                 apiId: 'openai',
                 apiLabel: '聊天补全预设',
                 activeName: activeOaiPreset,
-                entries: extractNamedPresets(settingsData?.openai_settings, settingsData?.openai_setting_names),
+                entries: getCachedNamedPresets(settingsData, 'openai', settingsData?.openai_settings, settingsData?.openai_setting_names),
             },
             {
                 apiId: 'textgenerationwebui',
                 apiLabel: '文本补全预设',
                 activeName: activeTextGenPreset,
-                entries: extractNamedPresets(settingsData?.textgenerationwebui_presets, settingsData?.textgenerationwebui_preset_names),
+                entries: getCachedNamedPresets(settingsData, 'textgen', settingsData?.textgenerationwebui_presets, settingsData?.textgenerationwebui_preset_names),
             },
         ];
 
@@ -1924,56 +2038,56 @@ export function createScannerSession(options = {}) {
                 label: '聊天补全预设',
                 apiId: 'openai',
                 activeName: ctx?.chatCompletionSettings?.preset_settings_openai || stSettings.preset_settings_openai || '',
-                list: extractNamedPresets(settingsData?.openai_settings, settingsData?.openai_setting_names),
+                list: getCachedNamedPresets(settingsData, 'openai', settingsData?.openai_settings, settingsData?.openai_setting_names),
             },
             {
                 subgroupId: 'preset_textgen',
                 label: '文本补全预设',
                 apiId: 'textgenerationwebui',
                 activeName: stSettings.preset_settings_textgenerationwebui || '',
-                list: extractNamedPresets(settingsData?.textgenerationwebui_presets, settingsData?.textgenerationwebui_preset_names),
+                list: getCachedNamedPresets(settingsData, 'textgen', settingsData?.textgenerationwebui_presets, settingsData?.textgenerationwebui_preset_names),
             },
             {
                 subgroupId: 'preset_instruct',
                 label: '指令模板',
                 apiId: 'instruct',
                 activeName: powerUser?.instruct?.preset || '',
-                list: extractNamedPresets(settingsData?.instruct, settingsData?.instruct),
+                list: getCachedNamedPresets(settingsData, 'instruct', settingsData?.instruct, settingsData?.instruct),
             },
             {
                 subgroupId: 'preset_context',
                 label: '上下文模板',
                 apiId: 'context',
                 activeName: powerUser?.context?.preset || '',
-                list: extractNamedPresets(settingsData?.context, settingsData?.context),
+                list: getCachedNamedPresets(settingsData, 'context', settingsData?.context, settingsData?.context),
             },
             {
                 subgroupId: 'preset_sysprompt',
                 label: '系统提示词',
                 apiId: 'sysprompt',
                 activeName: powerUser?.sysprompt?.preset || '',
-                list: extractNamedPresets(settingsData?.sysprompt, settingsData?.sysprompt),
+                list: getCachedNamedPresets(settingsData, 'sysprompt', settingsData?.sysprompt, settingsData?.sysprompt),
             },
             {
                 subgroupId: 'preset_reasoning',
                 label: '推理模板',
                 apiId: 'reasoning',
                 activeName: powerUser?.reasoning?.preset || '',
-                list: extractNamedPresets(settingsData?.reasoning, settingsData?.reasoning),
+                list: getCachedNamedPresets(settingsData, 'reasoning', settingsData?.reasoning, settingsData?.reasoning),
             },
             {
                 subgroupId: 'preset_novel',
                 label: 'NovelAI 预设',
                 apiId: 'novel',
                 activeName: stSettings.preset_settings_novel || '',
-                list: extractNamedPresets(settingsData?.novelai_settings, settingsData?.novelai_setting_names),
+                list: getCachedNamedPresets(settingsData, 'novel', settingsData?.novelai_settings, settingsData?.novelai_setting_names),
             },
             {
                 subgroupId: 'preset_kobold',
                 label: 'KoboldAI 预设',
                 apiId: 'kobold',
                 activeName: stSettings.preset_settings_kobold || '',
-                list: extractNamedPresets(settingsData?.koboldai_settings, settingsData?.koboldai_setting_names),
+                list: getCachedNamedPresets(settingsData, 'kobold', settingsData?.koboldai_settings, settingsData?.koboldai_setting_names),
             },
         ];
 
@@ -2867,25 +2981,58 @@ export function createScannerSession(options = {}) {
         return out;
     }
 
+    function buildCategoryRecord(categoryId, groups, warnings = []) {
+        let totalCount = 0;
+        let activeCount = 0;
+        let criticalCount = 0;
+        for (const g of groups) {
+            totalCount += g.items.length;
+            for (const item of g.items) {
+                if (item.isActive) activeCount++;
+                if (item.isCritical) criticalCount++;
+            }
+        }
+        const facets = buildCategoryFacets(categoryId, groups);
+        return {
+            categoryId,
+            groups,
+            facets,
+            totalCount,
+            activeCount,
+            criticalCount,
+            warnings,
+            scannedAt: Date.now(),
+        };
+    }
+
     /**
      * Scans a single top-level category (or returns cached result unless `force` is true).
      * @param {string} categoryId
-     * @param {{ force?: boolean, signal?: AbortSignal, onProgress?: (msg: string) => void }} [opts]
+     * @param {{ force?: boolean, signal?: AbortSignal, onProgress?: (msg: string) => void, onPartial?: (partialRecord: any) => void }} [opts]
      */
     async function scanCategory(categoryId, opts = {}) {
-        const { force = false, signal, onProgress } = opts;
+        const { force = false, signal, onProgress, onPartial } = opts;
         if (!force && categoryCache.has(categoryId)) {
             return categoryCache.get(categoryId);
         }
 
         unregisterCategoryKeys(categoryId);
+        overviewSummaryCache = null;
+        const emitPartial = typeof onPartial === 'function'
+            ? (partialGroups) => {
+                if (!signal?.aborted) {
+                    onPartial(buildCategoryRecord(categoryId, partialGroups, []));
+                }
+            }
+            : null;
+
         let rawResult;
         switch (categoryId) {
             case 'characters':
-                rawResult = await scanCharactersCategory(signal);
+                rawResult = await scanCharactersCategory(signal, onProgress, emitPartial);
                 break;
             case 'chats':
-                rawResult = await scanChatsCategory(signal, onProgress);
+                rawResult = await scanChatsCategory(signal, onProgress, emitPartial);
                 break;
             case 'regex':
                 rawResult = await scanRegexCategory(signal, onProgress);
@@ -2914,36 +3061,15 @@ export function createScannerSession(options = {}) {
 
         if (signal?.aborted) {
             unregisterCategoryKeys(categoryId);
+            overviewSummaryCache = null;
             throw new DOMException('Scan aborted', 'AbortError');
         }
 
         const groups = Array.isArray(rawResult) ? rawResult : rawResult.groups;
         const warnings = Array.isArray(rawResult) ? [] : (rawResult.warnings || []);
-
-        let totalCount = 0;
-        let activeCount = 0;
-        let criticalCount = 0;
-        for (const g of groups) {
-            totalCount += g.items.length;
-            for (const item of g.items) {
-                if (item.isActive) activeCount++;
-                if (item.isCritical) criticalCount++;
-            }
-        }
-
-        const facets = buildCategoryFacets(categoryId, groups);
-
-        const record = {
-            categoryId,
-            groups,
-            facets,
-            totalCount,
-            activeCount,
-            criticalCount,
-            warnings,
-            scannedAt: Date.now(),
-        };
+        const record = buildCategoryRecord(categoryId, groups, warnings);
         categoryCache.set(categoryId, record);
+        overviewSummaryCache = null;
         return record;
     }
 
@@ -2962,6 +3088,7 @@ export function createScannerSession(options = {}) {
             unregisterCategoryKeys(cid);
         }
         settingsSnapshot = null;
+        overviewSummaryCache = null;
     }
 
     function dispose() {
@@ -2969,15 +3096,16 @@ export function createScannerSession(options = {}) {
         categoryCache.clear();
         settingsSnapshot = null;
         settingsPromise = null;
+        overviewSummaryCache = null;
         dataMaidToken = null;
     }
 
     /**
      * Runs an on-demand multi-category deep diagnostic scan without blocking UI responsiveness.
-     * @param {{ signal?: AbortSignal, onProgress?: (msg: string) => void }} [opts]
+     * @param {{ signal?: AbortSignal, onProgress?: (msg: string) => void, onCategoryDone?: (categoryId: string) => void }} [opts]
      */
     async function runDeepHealthScan(opts = {}) {
-        const { signal, onProgress } = opts;
+        const { signal, onProgress, onCategoryDone } = opts;
         const targetCats = ['characters', 'worldinfo', 'regex', 'chats', 'media', 'extensions'];
         for (let i = 0; i < targetCats.length; i++) {
             if (signal?.aborted) throw new DOMException('Scan aborted', 'AbortError');
@@ -2985,6 +3113,7 @@ export function createScannerSession(options = {}) {
             const def = CATEGORY_DEFS.find(c => c.id === cid);
             onProgress?.(`正在深度体检 (${i + 1}/${targetCats.length})：${def?.label || cid}...`);
             await scanCategory(cid, { force: false, signal, onProgress });
+            onCategoryDone?.(cid);
         }
         return categoryCache;
     }

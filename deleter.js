@@ -675,28 +675,50 @@ async function executeBatchDeleteInternal(params) {
                             // Non-fatal
                         }
 
-                        // Clean character sprites folder if any sprites exist
+                        // Clean character sprites folder if any sprites exist.
+                        // Fast path: if `characters` category was already scanned, reuse cached sprite metadata
+                        // to avoid N redundant `GET api/sprites/get` round-trips on characters with 0 sprites!
                         if (isSafeSingleToken(p.spriteDirName)) {
                             try {
-                                const spRes = await sendRequest(
-                                    `api/sprites/get?name=${encodeURIComponent(p.spriteDirName)}`,
-                                    { method: 'GET' },
-                                );
-                                if (spRes.ok) {
-                                    const spList = await spRes.json();
-                                    if (Array.isArray(spList) && spList.length > 0) {
-                                        for (const sp of spList) {
-                                            const rawFile = String(sp?.path || '').split('?')[0].split('/').pop() || '';
-                                            const spriteName = rawFile.replace(/\.[^.]+$/, '');
-                                            if (spriteName && sp?.label) {
+                                const charsFullyScanned = Boolean(scanner?.getCachedCategory?.('characters'));
+                                const cachedSpriteItem = scanner?.whitelistMap?.get(`char_sprites:${p.avatar}`);
+                                if (charsFullyScanned) {
+                                    const cachedSprites = cachedSpriteItem?.payload?.sprites;
+                                    if (Array.isArray(cachedSprites) && cachedSprites.length > 0) {
+                                        for (const sp of cachedSprites) {
+                                            if (sp?.spriteName && sp?.label) {
                                                 await sendRequest('api/sprites/delete', {
                                                     method: 'POST',
                                                     body: {
                                                         name: p.spriteDirName,
                                                         label: sp.label,
-                                                        spriteName,
+                                                        spriteName: sp.spriteName,
                                                     },
                                                 }).catch(() => {});
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    const spRes = await sendRequest(
+                                        `api/sprites/get?name=${encodeURIComponent(p.spriteDirName)}`,
+                                        { method: 'GET' },
+                                    );
+                                    if (spRes.ok) {
+                                        const spList = await spRes.json();
+                                        if (Array.isArray(spList) && spList.length > 0) {
+                                            for (const sp of spList) {
+                                                const rawFile = String(sp?.path || '').split('?')[0].split('/').pop() || '';
+                                                const spriteName = rawFile.replace(/\.[^.]+$/, '');
+                                                if (spriteName && sp?.label) {
+                                                    await sendRequest('api/sprites/delete', {
+                                                        method: 'POST',
+                                                        body: {
+                                                            name: p.spriteDirName,
+                                                            label: sp.label,
+                                                            spriteName,
+                                                        },
+                                                    }).catch(() => {});
+                                                }
                                             }
                                         }
                                     }
@@ -1310,21 +1332,28 @@ async function executeBatchDeleteInternal(params) {
                 break;
             }
             case 'tag': {
-                if (Array.isArray(ctx?.tags)) {
-                    const idx = ctx.tags.findIndex(t => t?.id === p.id);
-                    if (idx !== -1) ctx.tags.splice(idx, 1);
-                }
-                for (const key of Object.keys(tagMap)) {
-                    if (Array.isArray(tagMap[key])) {
-                        tagMap[key] = tagMap[key].filter(tid => tid !== p.id);
-                    }
-                }
                 deletedTagIds.add(String(p.id));
                 pushSucceeded(item);
                 break;
             }
             default:
                 break;
+        }
+    }
+
+    // Batch-prune deleted tags in O(T + C) instead of O(T * C)
+    if (deletedTagIds.size > 0) {
+        if (Array.isArray(ctx?.tags)) {
+            for (let i = ctx.tags.length - 1; i >= 0; i--) {
+                if (deletedTagIds.has(String(ctx.tags[i]?.id))) {
+                    ctx.tags.splice(i, 1);
+                }
+            }
+        }
+        for (const key of Object.keys(tagMap)) {
+            if (Array.isArray(tagMap[key])) {
+                tagMap[key] = tagMap[key].filter(tid => !deletedTagIds.has(String(tid)));
+            }
         }
     }
 
@@ -1353,66 +1382,99 @@ async function executeBatchDeleteInternal(params) {
     const prevIdWasString = typeof ctx?.characterId === 'string';
     const prevActiveAvatar = hadActiveCharId ? characters[Number(ctx.characterId)]?.avatar : null;
 
-    // Unbind deleted characters completely & emit native CHARACTER_DELETED
-    for (const rec of deletedCharRecords) {
-        const { avatar } = rec;
-        const charIdx = characters.findIndex(c => c?.avatar === avatar);
-        const charObj = charIdx >= 0 ? characters[charIdx] : { avatar, name: rec.item.payload.name };
-        const charName = charObj?.name || stripExt(avatar, '.png');
+    // O(C + D) Set-batched character unbinding instead of O(C * D) nested splice/filter loops
+    if (deletedCharRecords.length > 0) {
+        const origIdxByAvatar = new Map();
+        const origCharByAvatar = new Map();
+        for (let i = 0; i < characters.length; i++) {
+            const c = characters[i];
+            if (c?.avatar) {
+                origIdxByAvatar.set(c.avatar, i);
+                origCharByAvatar.set(c.avatar, c);
+            }
+        }
 
-        if (charIdx >= 0) {
-            characters.splice(charIdx, 1);
+        const deletedAvatarSet = new Set();
+        const deletedCharIdents = new Set();
+        const deletedLoreNames = new Set();
+
+        for (const rec of deletedCharRecords) {
+            const { avatar } = rec;
+            const charObj = origCharByAvatar.get(avatar) || { avatar, name: rec.item.payload.name };
+            const charName = charObj?.name || stripExt(avatar, '.png');
+            const stripped = stripExt(avatar, '.png');
+            deletedAvatarSet.add(avatar);
+            deletedCharIdents.add(avatar);
+            if (charName) {
+                deletedCharIdents.add(charName);
+                deletedLoreNames.add(charName);
+            }
+            if (stripped) deletedLoreNames.add(stripped);
+
+            delete tagMap[avatar];
+            if (extSettings.character_attachments && typeof extSettings.character_attachments === 'object') {
+                delete extSettings.character_attachments[avatar];
+            }
+            for (const storage of [ctx?.accountStorage, globalThis.localStorage]) {
+                if (!storage || typeof storage.removeItem !== 'function') continue;
+                try {
+                    storage.removeItem(`AlertWI_${avatar}`);
+                    storage.removeItem(`AlertRegex_${avatar}`);
+                    storage.removeItem(`mediaWarningShown:${avatar}`);
+                } catch {
+                    // Ignore storage errors
+                }
+            }
         }
-        delete tagMap[avatar];
-        if (extSettings.character_attachments && typeof extSettings.character_attachments === 'object') {
-            delete extSettings.character_attachments[avatar];
+
+        // Single-pass in-place compaction of `characters`
+        let writeIdx = 0;
+        for (let readIdx = 0; readIdx < characters.length; readIdx++) {
+            const ch = characters[readIdx];
+            if (!ch?.avatar || !deletedAvatarSet.has(ch.avatar)) {
+                characters[writeIdx++] = ch;
+            }
         }
+        characters.length = writeIdx;
+
         if (powerUser.persona_descriptions && typeof powerUser.persona_descriptions === 'object') {
             for (const desc of Object.values(powerUser.persona_descriptions)) {
                 if (Array.isArray(desc?.connections)) {
                     desc.connections = desc.connections.filter(conn => {
                         const cid = typeof conn === 'string' ? conn : (conn?.id ?? conn?.avatar);
-                        return cid !== avatar && cid !== charName;
+                        return !deletedCharIdents.has(cid);
                     });
                 }
             }
         }
         if (Array.isArray(worldInfo.charLore)) {
-            worldInfo.charLore = worldInfo.charLore.filter(entry => entry?.name !== charName && entry?.name !== stripExt(avatar, '.png'));
+            worldInfo.charLore = worldInfo.charLore.filter(entry => !deletedLoreNames.has(entry?.name));
         }
-        // Clean TavernHelper (酒馆助手) character script allowlists
         if (extSettings?.tavern_helper?.script?.enabled && Array.isArray(extSettings.tavern_helper.script.enabled.characters)) {
             extSettings.tavern_helper.script.enabled.characters = extSettings.tavern_helper.script.enabled.characters.filter(
-                c => c !== avatar && c !== charName,
+                c => !deletedCharIdents.has(c),
             );
         }
         if (extSettings?.tavern_helper?.script?.popuped && Array.isArray(extSettings.tavern_helper.script.popuped.characters)) {
             extSettings.tavern_helper.script.popuped.characters = extSettings.tavern_helper.script.popuped.characters.filter(
-                c => c !== avatar && c !== charName,
+                c => !deletedCharIdents.has(c),
             );
         }
         if (extSettings?.TavernHelper?.script && Array.isArray(extSettings.TavernHelper.script.characters_with_scripts)) {
             extSettings.TavernHelper.script.characters_with_scripts = extSettings.TavernHelper.script.characters_with_scripts.filter(
-                c => c !== avatar && c !== charName,
+                c => !deletedCharIdents.has(c),
             );
         }
 
-        // Clean accountStorage / localStorage alert flags
-        for (const storage of [ctx?.accountStorage, globalThis.localStorage]) {
-            if (!storage || typeof storage.removeItem !== 'function') continue;
-            try {
-                storage.removeItem(`AlertWI_${avatar}`);
-                storage.removeItem(`AlertRegex_${avatar}`);
-                storage.removeItem(`mediaWarningShown:${avatar}`);
-            } catch {
-                // Ignore storage errors
+        for (const rec of deletedCharRecords) {
+            const { avatar } = rec;
+            const origIdx = origIdxByAvatar.get(avatar) ?? 0;
+            const charObj = origCharByAvatar.get(avatar) || { avatar, name: rec.item.payload.name };
+            for (const chatId of rec.pastChatIds) {
+                await safeEmit(ctx, 'CHAT_DELETED', chatId);
             }
+            await safeEmit(ctx, 'CHARACTER_DELETED', { id: origIdx, character: charObj });
         }
-
-        for (const chatId of rec.pastChatIds) {
-            await safeEmit(ctx, 'CHAT_DELETED', chatId);
-        }
-        await safeEmit(ctx, 'CHARACTER_DELETED', { id: charIdx >= 0 ? charIdx : 0, character: charObj });
     }
 
     // Re-align `ctx.characterId` after `characters.splice(...)`
@@ -1489,38 +1551,44 @@ async function executeBatchDeleteInternal(params) {
         try { await hostMods?.worldInfo?.updateWorldInfoList?.(); } catch {}
     }
 
-    // Unbind deleted presets & emit PRESET_DELETED
-    const deletedPresetNamesByApi = new Map();
-    for (const pr of deletedPresets) {
-        if (!deletedPresetNamesByApi.has(pr.apiId)) {
-            deletedPresetNamesByApi.set(pr.apiId, new Set());
+    // Unbind deleted presets & emit PRESET_DELETED in O(P + N)
+    if (deletedPresets.length > 0) {
+        const deletedPresetNamesByApi = new Map();
+        const allDeletedPresetNames = new Set();
+        for (const pr of deletedPresets) {
+            if (!deletedPresetNamesByApi.has(pr.apiId)) {
+                deletedPresetNamesByApi.set(pr.apiId, new Set());
+            }
+            deletedPresetNamesByApi.get(pr.apiId).add(pr.name);
+            allDeletedPresetNames.add(pr.name);
         }
-        deletedPresetNamesByApi.get(pr.apiId).add(pr.name);
-    }
-    for (const pr of deletedPresets) {
-        if (pr.isActive) {
-            const deletedInBucket = deletedPresetNamesByApi.get(pr.apiId) || new Set();
-            const candidates = Array.isArray(pr.candidateFallbacks)
-                ? pr.candidateFallbacks
-                : (pr.fallbackPresetName ? [pr.fallbackPresetName] : []);
-            const survivingFallback = candidates.find(n => n && !deletedInBucket.has(n)) || null;
-            if (pr.apiId === 'openai' && ctx?.chatCompletionSettings) {
-                ctx.chatCompletionSettings.preset_settings_openai = survivingFallback || 'Default';
-            } else if (powerUser?.[pr.apiId] && typeof powerUser[pr.apiId] === 'object') {
-                powerUser[pr.apiId].preset = survivingFallback || '';
+        for (const pr of deletedPresets) {
+            if (pr.isActive) {
+                const deletedInBucket = deletedPresetNamesByApi.get(pr.apiId) || new Set();
+                const candidates = Array.isArray(pr.candidateFallbacks)
+                    ? pr.candidateFallbacks
+                    : (pr.fallbackPresetName ? [pr.fallbackPresetName] : []);
+                const survivingFallback = candidates.find(n => n && !deletedInBucket.has(n)) || null;
+                if (pr.apiId === 'openai' && ctx?.chatCompletionSettings) {
+                    ctx.chatCompletionSettings.preset_settings_openai = survivingFallback || 'Default';
+                } else if (powerUser?.[pr.apiId] && typeof powerUser[pr.apiId] === 'object') {
+                    powerUser[pr.apiId].preset = survivingFallback || '';
+                }
             }
         }
         if (extSettings?.tavern_helper?.script?.enabled && Array.isArray(extSettings.tavern_helper.script.enabled.presets)) {
             extSettings.tavern_helper.script.enabled.presets = extSettings.tavern_helper.script.enabled.presets.filter(
-                n => n !== pr.name,
+                n => !allDeletedPresetNames.has(n),
             );
         }
         if (extSettings?.tavern_helper?.script?.popuped && Array.isArray(extSettings.tavern_helper.script.popuped.presets)) {
             extSettings.tavern_helper.script.popuped.presets = extSettings.tavern_helper.script.popuped.presets.filter(
-                n => n !== pr.name,
+                n => !allDeletedPresetNames.has(n),
             );
         }
-        await safeEmit(ctx, 'PRESET_DELETED', { apiId: pr.apiId, name: pr.name });
+        for (const pr of deletedPresets) {
+            await safeEmit(ctx, 'PRESET_DELETED', { apiId: pr.apiId, name: pr.name });
+        }
     }
 
     for (const wf of deletedComfyWorkflows) {
@@ -1556,19 +1624,45 @@ async function executeBatchDeleteInternal(params) {
         });
     }
 
-    // Unbind Data Bank attachments
-    for (const db of deletedDatabankItems) {
-        if (db.scope === 'global' && Array.isArray(extSettings.attachments)) {
-            extSettings.attachments = extSettings.attachments.filter(a => a?.url !== db.url);
-        } else if (db.scope === 'character' && Array.isArray(extSettings.character_attachments?.[db.ownerKey])) {
-            extSettings.character_attachments[db.ownerKey] = extSettings.character_attachments[db.ownerKey].filter(a => a?.url !== db.url);
-        } else if (db.scope === 'chat' && Array.isArray(chatMeta?.attachments)) {
-            chatMeta.attachments = chatMeta.attachments.filter(a => a?.url !== db.url);
+    // Unbind Data Bank attachments in O(D + A)
+    if (deletedDatabankItems.length > 0) {
+        const globalDelUrls = new Set();
+        const chatDelUrls = new Set();
+        const allDelUrls = new Set();
+        const charDelUrlsByOwner = new Map();
+
+        for (const db of deletedDatabankItems) {
+            allDelUrls.add(db.url);
+            if (db.scope === 'global') {
+                globalDelUrls.add(db.url);
+            } else if (db.scope === 'chat') {
+                chatDelUrls.add(db.url);
+            } else if (db.scope === 'character') {
+                if (!charDelUrlsByOwner.has(db.ownerKey)) {
+                    charDelUrlsByOwner.set(db.ownerKey, new Set());
+                }
+                charDelUrlsByOwner.get(db.ownerKey).add(db.url);
+            }
+        }
+        if (globalDelUrls.size > 0 && Array.isArray(extSettings.attachments)) {
+            extSettings.attachments = extSettings.attachments.filter(a => !globalDelUrls.has(a?.url));
+        }
+        if (chatDelUrls.size > 0 && Array.isArray(chatMeta?.attachments)) {
+            chatMeta.attachments = chatMeta.attachments.filter(a => !chatDelUrls.has(a?.url));
+        }
+        for (const [ownerKey, urlSet] of charDelUrlsByOwner.entries()) {
+            if (Array.isArray(extSettings.character_attachments?.[ownerKey])) {
+                extSettings.character_attachments[ownerKey] = extSettings.character_attachments[ownerKey].filter(
+                    a => !urlSet.has(a?.url),
+                );
+            }
         }
         if (Array.isArray(extSettings.disabled_attachments)) {
-            extSettings.disabled_attachments = extSettings.disabled_attachments.filter(u => u !== db.url);
+            extSettings.disabled_attachments = extSettings.disabled_attachments.filter(u => !allDelUrls.has(u));
         }
-        await safeEmit(ctx, 'FILE_ATTACHMENT_DELETED', db.url);
+        for (const db of deletedDatabankItems) {
+            await safeEmit(ctx, 'FILE_ATTACHMENT_DELETED', db.url);
+        }
     }
 
     // Unbind deleted third-party extensions from disabledExtensions list
