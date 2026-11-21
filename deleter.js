@@ -415,6 +415,7 @@ async function executeBatchDeleteInternal(params) {
             title: it.title,
             categoryId: it.categoryId,
             isActive: Boolean(it.isActive),
+            isCritical: Boolean(it.isCritical),
         });
     };
 
@@ -1240,6 +1241,7 @@ async function executeBatchDeleteInternal(params) {
     const chatMeta = ctx?.chatMetadata || ctx?.chat_metadata || {};
     const tagMap = ctx?.tagMap || ctx?.tag_map || {};
     const worldInfo = hostMods?.worldInfo?.world_info || ctx?.worldInfo || ctx?.world_info || {};
+    const deletedTagIds = new Set();
 
     // Process Stage 3 direct settings-backed items (regex_global, regex_combo, conn_profile, tag)
     for (const item of stage3DirectItems) {
@@ -1317,6 +1319,7 @@ async function executeBatchDeleteInternal(params) {
                         tagMap[key] = tagMap[key].filter(tid => tid !== p.id);
                     }
                 }
+                deletedTagIds.add(String(p.id));
                 pushSucceeded(item);
                 break;
             }
@@ -1487,12 +1490,24 @@ async function executeBatchDeleteInternal(params) {
     }
 
     // Unbind deleted presets & emit PRESET_DELETED
+    const deletedPresetNamesByApi = new Map();
+    for (const pr of deletedPresets) {
+        if (!deletedPresetNamesByApi.has(pr.apiId)) {
+            deletedPresetNamesByApi.set(pr.apiId, new Set());
+        }
+        deletedPresetNamesByApi.get(pr.apiId).add(pr.name);
+    }
     for (const pr of deletedPresets) {
         if (pr.isActive) {
+            const deletedInBucket = deletedPresetNamesByApi.get(pr.apiId) || new Set();
+            const candidates = Array.isArray(pr.candidateFallbacks)
+                ? pr.candidateFallbacks
+                : (pr.fallbackPresetName ? [pr.fallbackPresetName] : []);
+            const survivingFallback = candidates.find(n => n && !deletedInBucket.has(n)) || null;
             if (pr.apiId === 'openai' && ctx?.chatCompletionSettings) {
-                ctx.chatCompletionSettings.preset_settings_openai = pr.fallbackPresetName || 'Default';
+                ctx.chatCompletionSettings.preset_settings_openai = survivingFallback || 'Default';
             } else if (powerUser?.[pr.apiId] && typeof powerUser[pr.apiId] === 'object') {
-                powerUser[pr.apiId].preset = pr.fallbackPresetName || '';
+                powerUser[pr.apiId].preset = survivingFallback || '';
             }
         }
         if (extSettings?.tavern_helper?.script?.enabled && Array.isArray(extSettings.tavern_helper.script.enabled.presets)) {
@@ -1571,8 +1586,8 @@ async function executeBatchDeleteInternal(params) {
     await flushSaveSettingsImmediate(ctx, params.saveSettingsImmediate, hostMods);
 
     // Refresh live SillyTavern host lists in-place when reload is not required
-    // Only require page reload if an ACTUALLY SUCCEEDED deletion was active!
-    const requiresReload = succeeded.some(s => Boolean(s.isActive));
+    // Require page reload if an ACTUALLY SUCCEEDED deletion was active OR a critical foundation component!
+    const requiresReload = succeeded.some(s => Boolean(s.isActive || s.isCritical));
     const cleanSucceeded = succeeded.map(({ key, title, categoryId }) => ({ key, title, categoryId }));
     if (!requiresReload) {
         if (deletedCharRecords.length > 0 || deletedGroupIds.size > 0) {
@@ -1587,12 +1602,15 @@ async function executeBatchDeleteInternal(params) {
     const affectedCategories = [...new Set(
         [...succeeded, ...skipped].map(s => s.categoryId).filter(Boolean),
     )];
-    // Also invalidate dependent categories if characters or worldbooks changed
+    // Also invalidate dependent categories if characters, worldbooks, or tags changed
     if (deletedCharRecords.length > 0) {
         affectedCategories.push('characters', 'chats', 'regex', 'worldinfo', 'media');
     }
     if (deletedWorldNames.size > 0) {
         affectedCategories.push('worldinfo', 'characters', 'personas');
+    }
+    if (deletedTagIds.size > 0) {
+        affectedCategories.push('media', 'characters', 'chats', 'worldinfo');
     }
     scanner?.invalidateCategories?.([...new Set(affectedCategories)]);
 

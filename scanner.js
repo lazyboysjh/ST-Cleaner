@@ -321,16 +321,37 @@ export function parseBackgroundsPayload(payload) {
     return out;
 }
 
+const MONTH_MAP = {
+    jan: 0, january: 0,
+    feb: 1, february: 1,
+    mar: 2, march: 2,
+    apr: 3, april: 3,
+    may: 4,
+    jun: 5, june: 5,
+    jul: 6, july: 6,
+    aug: 7, august: 7,
+    sep: 8, sept: 8, september: 8,
+    oct: 9, october: 9,
+    nov: 10, november: 10,
+    dec: 11, december: 11,
+};
+
 /**
  * Parses SillyTavern's varied timestamp formats into epoch milliseconds (or 0 if unavailable):
- * - numeric ms / s (`1732190000000` / `1732190000`)
- * - ST date strings (`"2026-11-20 @12h05m00s"`, `"2026-11-20@12h05m00s"`, `"November 20, 2026"`)
- * - Filename date prefixes/suffixes (`"2026-11-20@塔罗会.jsonl"`, `"chat_klein_20261119.jsonl"`)
+ * - numeric ms / s (`1732190000000` / `1732190000`) or Date instances
+ * - ISO 8601 with `Z` or timezone offsets (`"2026-11-20T20:05:00.123+08:00"`)
+ * - ST humanized strings with or without spaces & ms (`"2024-6-5 @14h 56m 50s 682ms"`, `"2024-07-12@01h31m37s123ms"`)
+ * - Legacy TavernAI meridiem strings (`"June 19, 2023 2:20pm"`, `"Nov 5, 2024 11:05am"`)
+ * - Filename date prefixes/suffixes (`"2026-11-20@塔罗会.jsonl"`, `"chat_klein_20261119_120000.jsonl"`)
  * @param {any} raw
  * @param {string} [fallbackText]
  * @returns {number}
  */
 export function parseTavernTimestamp(raw, fallbackText = '') {
+    if (raw instanceof Date) {
+        const t = raw.getTime();
+        return Number.isFinite(t) && t > 0 ? Math.round(t) : 0;
+    }
     if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) {
         return raw < 1e11 ? Math.round(raw * 1000) : Math.round(raw);
     }
@@ -344,8 +365,15 @@ export function parseTavernTimestamp(raw, fallbackText = '') {
             const n = Number(str);
             return str.length === 10 ? n * 1000 : n;
         }
-        // Match YYYY-MM-DD with optional @HHhMMmSSs
-        const stMatch = str.match(/(\d{4})-(\d{1,2})-(\d{1,2})(?:[\s@T_-]*(\d{1,2})[h:](\d{1,2})(?:[m:](\d{1,2}))?)?/);
+        // 1. Full ISO-8601 with explicit Z or +/-HH:MM offset (preserve exact timezone offset!)
+        if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})$/i.test(str)) {
+            const isoMs = Date.parse(str);
+            if (Number.isFinite(isoMs) && isoMs > 0) return isoMs;
+        }
+        // 2. ST humanized & YYYY-MM-DD formats (including spaces after h/m/s and optional ms: `2024-6-5 @14h 56m 50s 682ms`)
+        const stMatch = str.match(
+            /(\d{4})-(\d{1,2})-(\d{1,2})(?:[\s@T_-]+(\d{1,2})\s*[h:]\s*(\d{1,2})(?:\s*[m:]\s*(\d{1,2})(?:\s*s?\s*(\d{1,3})\s*ms|\s*s)?)?)?/i,
+        );
         if (stMatch) {
             const y = Number(stMatch[1]);
             const m = Number(stMatch[2]) - 1;
@@ -353,10 +381,26 @@ export function parseTavernTimestamp(raw, fallbackText = '') {
             const hh = Number(stMatch[4] || 0);
             const mm = Number(stMatch[5] || 0);
             const ss = Number(stMatch[6] || 0);
-            const ts = Date.UTC(y, m, d, hh, mm, ss);
+            const ms = Number(stMatch[7] || 0);
+            const ts = Date.UTC(y, m, d, hh, mm, ss, ms);
             if (Number.isFinite(ts) && ts > 0) return ts;
         }
-        // Match compact YYYYMMDD (e.g. backup filename `chat_name_20261119_120000.jsonl`)
+        // 3. Legacy TavernAI / ST meridiem format (`"June 19, 2023 2:20pm"` without space before am/pm)
+        const merMatch = str.match(/([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(am|pm)/i);
+        if (merMatch) {
+            const monIdx = MONTH_MAP[merMatch[1].toLowerCase()];
+            if (monIdx !== undefined) {
+                const day = Number(merMatch[2]);
+                const year = Number(merMatch[3]);
+                const rawHour = Number(merMatch[4]) % 12;
+                const hour24 = merMatch[7].toLowerCase() === 'pm' ? rawHour + 12 : rawHour;
+                const min = Number(merMatch[5]);
+                const sec = Number(merMatch[6] || 0);
+                const ts = Date.UTC(year, monIdx, day, hour24, min, sec);
+                if (Number.isFinite(ts) && ts > 0) return ts;
+            }
+        }
+        // 4. Compact YYYYMMDD (e.g. backup filename `chat_name_20261119_120000.jsonl`)
         const compactMatch = str.match(/(?:^|[^\d])(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?:[_-]?(\d{2})(\d{2})(\d{2})?)?/);
         if (compactMatch) {
             const ts = Date.UTC(
@@ -376,22 +420,22 @@ export function parseTavernTimestamp(raw, fallbackText = '') {
 }
 
 /**
- * Parses human-readable file size strings like `"14.2 KB"`, `"1.5 MB"`, `"820 B"` into bytes.
+ * Parses human-readable file size strings like `"14.2 KB"`, `"1.5 MiB"`, `"1,024 B"` into bytes.
  * @param {any} raw
  * @returns {number}
  */
 export function parseSizeStringBytes(raw) {
     if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) return Math.round(raw);
-    const s = String(raw || '').trim();
+    const s = String(raw || '').replace(/,/g, '').trim();
     if (!s) return 0;
-    const m = s.match(/^([\d.]+)\s*(b|kb|mb|gb)?$/i);
+    const m = s.match(/^([\d.]+)\s*(b|kb|kib|mb|mib|gb|gib)?$/i);
     if (!m) return 0;
     const val = Number(m[1]);
     if (!Number.isFinite(val)) return 0;
     const unit = (m[2] || 'b').toLowerCase();
-    if (unit === 'gb') return Math.round(val * 1024 * 1024 * 1024);
-    if (unit === 'mb') return Math.round(val * 1024 * 1024);
-    if (unit === 'kb') return Math.round(val * 1024);
+    if (unit === 'gb' || unit === 'gib') return Math.round(val * 1024 * 1024 * 1024);
+    if (unit === 'mb' || unit === 'mib') return Math.round(val * 1024 * 1024);
+    if (unit === 'kb' || unit === 'kib') return Math.round(val * 1024);
     return Math.round(val);
 }
 
@@ -1294,7 +1338,7 @@ export function createScannerSession(options = {}) {
                         const isCharDefault = Boolean(charDefaultBase && baseName === charDefaultBase);
                         const msgCount = info?.chat_items ?? info?.mes_count ?? '';
                         const numericMsgs = msgCount !== '' ? Number(msgCount) : NaN;
-                        const isShortTest = Number.isFinite(numericMsgs) && numericMsgs <= 2;
+                        const isShortTest = !isCharDefault && Number.isFinite(numericMsgs) && numericMsgs <= 2;
                         const lastMes = info?.last_mes ? ` · 最近: ${String(info.last_mes).slice(0, 24)}` : '';
                         const sizeText = info?.file_size ? ` · ${info.file_size}` : '';
 
@@ -1931,20 +1975,30 @@ export function createScannerSession(options = {}) {
             },
         ];
 
+        const CORE_SOLE_GUARD_APIS = new Set(['openai', 'textgenerationwebui', 'instruct', 'context', 'sysprompt', 'reasoning']);
         return presetBuckets.map((bucket) => {
             const validEntries = bucket.list.filter(e => e?.name && e.name !== 'gui');
+            const allNames = validEntries.map(e => e.name);
             const items = [];
             for (const entry of validEntries) {
                 const isActive = Boolean(bucket.activeName && entry.name === bucket.activeName);
                 const isBuiltin = OFFICIAL_BUILTIN_PRESET_NAMES.has(entry.name);
+                const isSoleRemaining = validEntries.length === 1 && CORE_SOLE_GUARD_APIS.has(bucket.apiId);
                 const isDefaultAnchor = (
                     ((bucket.apiId === 'openai' || bucket.apiId === 'textgenerationwebui' || bucket.apiId === 'context') && entry.name === 'Default')
                     || ((bucket.apiId === 'sysprompt' || bucket.apiId === 'reasoning') && (entry.name === 'Blank' || entry.name === 'Default'))
-                    || (bucket.apiId === 'openai' && validEntries.length === 1)
+                    || isSoleRemaining
                 );
-                const fallbackItem = validEntries.find(x => x.name !== entry.name);
+                const otherNames = allNames.filter(n => n !== entry.name);
+                otherNames.sort((a, b) => {
+                    const rank = (n) => (n === 'Default' ? 0 : (n === 'Blank' ? 1 : 2));
+                    return rank(a) - rank(b);
+                });
+                const fallbackPresetName = otherNames[0] || null;
                 const criticalReason = isDefaultAnchor
-                    ? `该引擎核心兜底预设（全部删空会导致预设面板/导出异常，且重启酒馆不会自动重建）`
+                    ? (isSoleRemaining && entry.name !== 'Default' && entry.name !== 'Blank'
+                        ? `该引擎下仅剩的最后 1 个模板（删空后会导致对应面板无可用预设或报错）`
+                        : `该引擎核心兜底预设（全部删空会导致预设面板/导出异常，且重启酒馆不会自动重建）`)
                     : '';
 
                 let subtitle = `${bucket.label} (${bucket.apiId})`;
@@ -1980,7 +2034,8 @@ export function createScannerSession(options = {}) {
                         apiId: bucket.apiId,
                         name: entry.name,
                         isActive,
-                        fallbackPresetName: fallbackItem?.name || null,
+                        fallbackPresetName,
+                        candidateFallbacks: otherNames,
                     },
                 }));
             }
